@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         PostOne History Scanner (Item number)
 // @namespace    dolphin.postone.history
-// @version      1.1.3
-// @description  Мултисканиране в PostOne /history: сканира СУРОВ баркод (без редакция), филтрира по колона "Item number", извлича Tracking/Reference/Track Partner/Sender/Status/Created/Manifested/Dispatched/Receiver/Country/Invoice Weight и експортира в Excel (.xlsx) или CSV.
+// @version      1.2.0
+// @description  Bulk-scan on PostOne /history: filters the "Item number" column by the raw barcode, extracts tracking, reference, partner, sender, status, dates, receiver, country and invoice weight, and exports to Excel (.xlsx) or CSV.
 // @author       dolphin
 // @match        https://postone.eu/history*
 // @icon         https://postone.eu/favicon.ico
@@ -13,42 +13,39 @@
 
 /*
  * ────────────────────────────────────────────────────────────────────────
- *  ВАЖНО — КОНФЛИКТ С ДРУГИ СКРИПТОВЕ:
- *   Този скрипт логва като [PostOne scanner]. Ако в конзолата виждате съобщения като
- *   [Postone Script v2.6] / [Postone] Form not loaded yet... — това е ДРУГ, отделен скрипт,
- *   който също закача /history и КОНФЛИКТИРА. Изключете го (и всяка стара версия на този скенер)
- *   в Tampermonkey и оставете само този.
+ *  CONFLICTS WITH OTHER SCRIPTS:
+ *   This script logs as [PostOne scanner]. If the console also shows messages
+ *   like [Postone Script vX] / [Postone] Form not loaded yet..., that is a
+ *   SEPARATE script which also binds to /history and conflicts with this one.
+ *   Disable it (and any older copy of this scanner) in Tampermonkey.
  *
- *  ЛОГИКА (потвърдено на живата форма postone.eu/history — 14.07.2026):
- *   • Таблица #shipments (server-side DataTables, ajax "/history/getShipments").
- *   • Колоните се откриват по ЗАГЛАВИЕ (устойчиво към пренареждане).
- *   • Търсене по "Item number" = input-ът в реда с филтри, в СЪЩАТА колона (класът е подвеждащ).
- *   • Баркодът НЕ се редактира — само trim за whitespace. Клетките се четат през innerText.
- *   • ТРИГЕР: основен е КЛИК на бутона за филтриране (#shipments-filter-table); ENTER е резерва.
- *   • Готовността се засича с change-detection polling (без jQuery / без draw.dt).
+ *  PAGE CONTRACT (confirmed against the live postone.eu/history form, 14.07.2026):
+ *   - Table #shipments (server-side DataTables, ajax "/history/getShipments").
+ *   - Columns are located by HEADING TEXT, so reordering them does not break it.
+ *   - "Item number" search = the input in the filter row, in that SAME column
+ *     (the element's own class is misleading).
+ *   - The barcode is never edited, only trimmed. Cells are read via innerText.
+ *   - Search trigger: primarily a click on #shipments-filter-table; Enter is
+ *     the fallback.
+ *   - Readiness is detected by change-detection polling (no jQuery, no draw.dt).
  *
- *  ПРОМЯНА v1.1.3 (BUGFIX):
- *   • Поправен КОНФЛИКТ на ключа `status`: вътрешният флаг за резултат (found/notfound/…)
- *     се презаписваше от стойността на колоната "Status" (напр. 'Върната на изпращача'),
- *     затова намерена пратка се броеше като "грешка". Вътрешният флаг е преименуван на `_state`,
- *     а колоната `status` (статус на пратката) се запазва отделно.
- *
- *  ПРОМЯНА v1.1.2:
- *   • Защита от двойно зареждане (ако скриптът е инсталиран в 2 копия — второто не се активира).
+ *  v1.1.3 fix: the internal result flag `status` collided with the shipment's
+ *   own "Status" column value, so a found shipment could be counted as an
+ *   error. The internal flag is now `_state`; the column stays `status`.
  * ────────────────────────────────────────────────────────────────────────
  */
 
 (function () {
   'use strict';
 
-  // --- защита от двойно зареждане / дублиран UI ---
+  // --- guard against a double install / duplicated UI ---
   if (window.__POS_SCANNER_LOADED__) {
-    try { console.log('[PostOne scanner] вече е зареден (' + window.__POS_SCANNER_LOADED__ + ') — пропускам дубликат'); } catch (e) {}
+    try { console.log('[PostOne scanner] already loaded (' + window.__POS_SCANNER_LOADED__ + ') - skipping duplicate'); } catch (e) {}
     return;
   }
   window.__POS_SCANNER_LOADED__ = '1.1.3';
 
-  /* ===================== КОНФИГУРАЦИЯ ===================== */
+  /* ===================== CONFIGURATION ===================== */
   const CFG = {
     table: '#shipments',
     filterBtn: '#shipments-filter-table',
@@ -73,21 +70,21 @@
     log: true,
   };
 
-  /* ===================== ПОМОЩНИ ФУНКЦИИ ===================== */
+  /* ===================== HELPERS ===================== */
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   const log = (...a) => { if (CFG.log) { try { console.log('[PostOne scanner]', ...a); } catch (e) {} } };
   const errText = (err) => {
     try {
-      if (err == null) return 'няма детайли';
-      if (typeof err === 'string') return err || 'празна грешка';
+      if (err == null) return 'no details';
+      if (typeof err === 'string') return err || 'empty error';
       const parts = [];
       if (err.name) parts.push(err.name);
       if (err.message) parts.push(err.message);
       if (!parts.length && err.stack) parts.push(String(err.stack).split('\n')[0]);
       if (!parts.length) parts.push(Object.prototype.toString.call(err));
       return parts.join(': ');
-    } catch (e) { return 'грешка при разчитане на грешката'; }
+    } catch (e) { return 'could not read the error'; }
   };
 
   function setNativeValue(el, value) {
@@ -113,7 +110,7 @@
         try { Object.defineProperty(ev, 'keyCode', { get: () => 13 }); } catch (_) {}
         try { Object.defineProperty(ev, 'which', { get: () => 13 }); } catch (_) {}
         el.dispatchEvent(ev);
-      } catch (e) { /* бутонът вече е кликнат */ }
+      } catch (e) { /* the button has already been clicked */ }
     });
   }
 
@@ -174,13 +171,13 @@
 
   async function searchItem(rawBarcode) {
     const table = getTable();
-    if (!table) return { _state: 'error', msg: 'Таблицата #shipments не е намерена (на /history ли сте?).' };
+    if (!table) return { _state: 'error', msg: 'Table #shipments not found. Are you on the /history page?' };
 
     const cols = detectColumns(table);
-    if (cols._itemIdx < 0) return { _state: 'error', msg: 'Колона "Item number" не е намерена.' };
+    if (cols._itemIdx < 0) return { _state: 'error', msg: 'The "Item number" column was not found.' };
 
     const input = getItemFilterInput(table, cols._itemIdx);
-    if (!input) return { _state: 'error', msg: 'Полето за филтриране по "Item number" не е намерено.' };
+    if (!input) return { _state: 'error', msg: 'The "Item number" filter field was not found.' };
 
     const beforeInfo = readInfo(table);
     const beforeItem = firstItemText(table, cols._itemIdx);
@@ -234,7 +231,7 @@
     return { _state: 'timeout' };
   }
 
-  /* ===================== СЪСТОЯНИЕ ===================== */
+  /* ===================== STATE ===================== */
   const scans = [];
   let processing = false;
   const queue = [];
@@ -289,7 +286,7 @@
   function buildUI() {
     const fab = document.createElement('button');
     fab.id = 'pos-fab';
-    fab.textContent = '⇢ Item scanner';
+    fab.textContent = 'Item scanner';
     document.body.appendChild(fab);
 
     const ths = CFG.columns.map((c) => `<th>${esc(c.label)}</th>`).join('');
@@ -298,13 +295,13 @@
     overlay.innerHTML = `
       <div id="pos-modal">
         <div id="pos-head">
-          <h2>⇢ Сканиране по Item number (PostOne)</h2>
-          <button id="pos-close" title="Затвори">×</button>
+          <h2>PostOne scanner - by Item number</h2>
+          <button id="pos-close" title="Close">&times;</button>
         </div>
         <div id="pos-body">
           <div id="pos-scanwrap">
-            <input id="pos-scan" placeholder="Сканирай баркод тук (суров, без редакция)…" autocomplete="off" />
-            <button id="pos-go" title="Търси">Търси</button>
+            <input id="pos-scan" placeholder="Scan a barcode here (raw, unedited)..." autocomplete="off" />
+            <button id="pos-go" title="Search">Search</button>
           </div>
           <div id="pos-status"></div>
           <div id="pos-counts"></div>
@@ -312,16 +309,16 @@
             <thead><tr>
               <th style="width:28px">#</th>
               ${ths}
-              <th style="width:44px" title="Резултат">✓/✗</th>
+              <th style="width:44px" title="Search result">Result</th>
               <th style="width:28px"></th>
             </tr></thead>
             <tbody id="pos-rows"></tbody>
           </table>
         </div>
         <div id="pos-foot">
-          <button class="pos-btn ghost" id="pos-clear">Изчисти списъка</button>
-          <button class="pos-btn ghost" id="pos-csv">⬇ CSV</button>
-          <button class="pos-btn primary" id="pos-export">⬇ Изтегли Excel (.xlsx)</button>
+          <button class="pos-btn ghost" id="pos-clear">Clear list</button>
+          <button class="pos-btn ghost" id="pos-csv">Download CSV</button>
+          <button class="pos-btn primary" id="pos-export">Download Excel (.xlsx)</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -354,7 +351,7 @@
     overlay.querySelector('#pos-go').addEventListener('click', submit);
 
     overlay.querySelector('#pos-clear').addEventListener('click', () => {
-      if (scans.length && !confirm('Изчистване на целия списък?')) return;
+      if (scans.length && !confirm('Clear the whole list?')) return;
       scans.length = 0;
       renderRows();
       scan.focus();
@@ -371,7 +368,7 @@
     const code = String(raw || '').replace(/[\r\n\t]/g, '').trim();
     if (!code) return;
     if (scans.some((s) => s.item === code && s._state === 'found')) {
-      setStatus('Вече сканирана: ' + code, 'info');
+      setStatus('Already scanned: ' + code, 'info');
       return;
     }
     queue.push({ code, setStatus });
@@ -383,7 +380,7 @@
     processing = true;
     while (queue.length) {
       const { code, setStatus } = queue.shift();
-      setStatus('Търсене: ' + code + ' …', 'info');
+      setStatus('Searching ' + code + '...', 'info');
       let res;
       try {
         res = await searchItem(code);
@@ -397,17 +394,19 @@
         CFG.columns.forEach((c) => { rec[c.key] = res[c.key] || ''; });
         if (!rec.item) rec.item = code;
         scans.push(rec);
-        const warn = res.multiple ? ` (внимание: ${res.multiple} реда)` : (res.exact ? '' : ' (внимание: няма точно съвпадение)');
-        setStatus(`✓ ${rec.item} — ${rec.reference || '(без референция)'}${warn}`, 'ok');
+        const warn = res.multiple ? ` (warning: ${res.multiple} rows matched)`
+                                  : (res.exact ? '' : ' (warning: no exact match)');
+        setStatus(`Found ${rec.item} - ${rec.reference || '(no reference)'}${warn}`, 'ok');
       } else if (res && res._state === 'notfound') {
         scans.push(blankRec(code, 'notfound'));
-        setStatus('✗ Не е намерена: ' + code, 'err');
+        setStatus('Not found: ' + code, 'err');
       } else if (res && res._state === 'timeout') {
         scans.push(blankRec(code, 'timeout'));
-        setStatus('⏱ Изтече времето за: ' + code, 'err');
+        setStatus('Timed out: ' + code, 'err');
       } else {
         scans.push(blankRec(code, 'error'));
-        setStatus('Грешка: ' + ((res && res.msg) || 'неизвестна') + '\n(виж конзолата: [PostOne scanner])', 'err');
+        setStatus('Error: ' + ((res && res.msg) || 'unknown') +
+                  '\n(see the browser console: [PostOne scanner])', 'err');
       }
       renderRows();
     }
@@ -431,10 +430,11 @@
       if (s._state !== 'found') tr.className = 'pos-bad';
       const badge = s._state === 'found'
         ? '<span class="pos-badge ok">OK</span>'
-        : `<span class="pos-badge no">${s._state === 'timeout' ? '⏱' : (s._state === 'error' ? 'ГР' : 'няма')}</span>`;
+        : `<span class="pos-badge no">${s._state === 'timeout' ? 'timeout'
+             : (s._state === 'error' ? 'error' : 'none')}</span>`;
       const tds = CFG.columns.map((c) => `<td>${esc(s[c.key])}</td>`).join('');
       tr.innerHTML = `<td>${idx + 1}</td>${tds}<td>${badge}</td>` +
-        `<td><button class="pos-del" title="Премахни" data-i="${idx}">×</button></td>`;
+        `<td><button class="pos-del" title="Remove" data-i="${idx}">×</button></td>`;
       tbody.appendChild(tr);
     });
     tbody.querySelectorAll('.pos-del').forEach((b) =>
@@ -443,29 +443,31 @@
     const found = scans.filter((s) => s._state === 'found').length;
     const bad = scans.length - found;
     const c = document.querySelector('#pos-counts');
-    if (c) c.textContent = `Общо сканирания: ${scans.length}  •  намерени: ${found}  •  проблемни: ${bad}`;
+    if (c) c.textContent = `Scans: ${scans.length}   Found: ${found}   Problems: ${bad}`;
   }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
   }
 
-  /* ===================== ЕКСПОРТ ===================== */
+  /* ===================== EXPORT ===================== */
   function buildRows() {
     return scans.map((s, i) => {
-      const row = { '№': i + 1 };
+      const row = { 'No.': i + 1 };
       CFG.columns.forEach((c) => { row[c.label] = s[c.key] || ''; });
-      row['Резултат'] = s._state === 'found' ? 'намерена' : (s._state === 'timeout' ? 'таймаут' : (s._state === 'error' ? 'грешка' : 'не е намерена'));
-      row['Суров скан'] = s.raw;
-      row['Време'] = s.time ? s.time.toLocaleString('bg-BG') : '';
+      row['Result'] = s._state === 'found' ? 'found'
+                    : (s._state === 'timeout' ? 'timeout'
+                    : (s._state === 'error' ? 'error' : 'not found'));
+      row['Raw scan'] = s.raw;
+      row['Scanned at'] = s.time ? s.time.toLocaleString('en-GB') : '';
       return row;
     });
   }
 
   function exportXlsx(setStatus) {
-    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    if (!scans.length) { setStatus('The list is empty.', 'err'); return; }
     if (typeof XLSX === 'undefined') {
-      setStatus('XLSX не е зареден (CSP?). Пробвам CSV…', 'err');
+      setStatus('XLSX library did not load (CSP?). Falling back to CSV...', 'err');
       exportCsv(setStatus);
       return;
     }
@@ -475,11 +477,11 @@
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'PostOne');
     XLSX.writeFile(wb, `postone-history-${stamp()}.xlsx`);
-    setStatus('Excel файлът е генериран.', 'ok');
+    setStatus('Excel file generated.', 'ok');
   }
 
   function exportCsv(setStatus) {
-    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    if (!scans.length) { setStatus('The list is empty.', 'err'); return; }
     const rows = buildRows();
     const headers = Object.keys(rows[0]);
     const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
@@ -493,12 +495,12 @@
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setStatus('CSV файлът е генериран.', 'ok');
+    setStatus('CSV file generated.', 'ok');
   }
 
   function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
 
-  /* ===================== СТАРТ ===================== */
+  /* ===================== BOOT ===================== */
   function init() {
     injectStyle();
     ui = buildUI();

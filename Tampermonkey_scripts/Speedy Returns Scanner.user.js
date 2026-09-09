@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Speedy Returns Scanner (Върнати товарителници)
+// @name         Speedy Returns Scanner
 // @namespace    dolphin.speedy.returns
-// @version      1.1.0
-// @description  Мултисканиране на върнати пратки в MySpeedy: сканира баркод (напр. RET63571367473), търси по Товарителница, извлича "Референция 1" + "Подател име" и експортира в Excel (.xlsx).
+// @version      1.2.0
+// @description  Bulk-scan returned MySpeedy consignments: scan a barcode (e.g. RET63571367473), look it up by waybill number, extract the reference and sender, and export to Excel (.xlsx) or CSV.
 // @author       dolphin
 // @match        https://myspeedy.speedy.bg/reports/consignments*
 // @icon         https://myspeedy.speedy.bg/favicon.ico
@@ -13,47 +13,41 @@
 
 /*
  * ────────────────────────────────────────────────────────────────────────
- *  ЛОГИКА (потвърдено на живата форма 14.07.2026):
- *   • Поле "Товарителница"      -> #consignment-number  (.consignment-input)
- *   • Бутон "Търси"             -> #btn-search
- *   • Таблица с резултати       -> #DataTables_Table_0  (.consignment-results-table)
- *   • Колони се намират по ЗАГЛАВИЕ (устойчиво към пренареждане/скриване):
- *        "Номер на тов."   -> Товарителница (номер)
- *        "Референция 1"    -> Референция 1
- *        "Получател име"   -> Име на получателя
- *        "Получател адрес" -> Адрес на получателя
- *        "Подател име"     -> Име на подателя
- *        "Подател адрес"   -> Адрес на подателя
- *        "Пакети"          -> Брой пакети
- *        "Номер заявка"    -> Номер на заявка
- *        "Дата"            -> Дата
- *        "Статус"          -> Статус на пратката
- *   • Датовите филтри се изключват (#period-from-activation / #period-to-activation),
- *     за да не се ограничава търсенето по дата (важно за стари върнати пратки).
- *   • Суровият скан "RET63571367473" -> в търсенето влизат само цифрите "63571367473".
+ *  PAGE CONTRACT (confirmed against the live form, 14.07.2026):
+ *   - "Товарителница" field   -> #consignment-number  (.consignment-input)
+ *   - "Търси" (search) button -> #btn-search
+ *   - Results table           -> #DataTables_Table_0  (.consignment-results-table)
+ *   - Columns are located by their HEADING TEXT, so reordering or hiding a
+ *     column does not break the script. The needles in CFG below are the
+ *     site's own Bulgarian headings and MUST stay in Bulgarian - they are
+ *     selectors, not display text.
+ *   - The activation-date filters (#period-from-activation /
+ *     #period-to-activation) are switched off so the search is not limited by
+ *     date, which matters for older returns.
+ *   - A raw scan "RET63571367473" is reduced to its digits, "63571367473".
  * ────────────────────────────────────────────────────────────────────────
  */
 
 (function () {
   'use strict';
 
-  // --- защита от двойно зареждане / дублиран UI ---
+  // --- guard against a double install / duplicated UI ---
   if (window.__SRS_SCANNER_LOADED__) return;
   window.__SRS_SCANNER_LOADED__ = '1.1.0';
 
-  /* ===================== КОНФИГУРАЦИЯ ===================== */
+  /* ===================== CONFIGURATION ===================== */
   const CFG = {
     consignmentInput: '#consignment-number',
     searchButton: '#btn-search',
     resultsTable: '#DataTables_Table_0',
     dateFromActivation: '#period-from-activation',
     dateToActivation: '#period-to-activation',
-    // Полета за изчистване при отваряне (за да няма конфликтни филтри)
+    // Cleared when the panel opens, so stale filters cannot narrow the search
     clearFields: ['#consignment-number', '#reference', '#receiver-name', '#order-number', '#file-number'],
-    // Заглавия на колони (нормализирано)
+    // Column headings as they appear on the site, normalised (SELECTORS - do not translate)
     col_waybill: 'номер на тов',
-    col_order: 'заявка',        // "Номер заявка" (includes)
-    col_date: 'дата',           // "Дата" (exact)
+    col_order: 'заявка',        // "Номер заявка" (substring match)
+    col_date: 'дата',           // "Дата" (exact match)
     col_receiver: 'получател име',
     col_receiverAddr: 'получател адрес',
     col_sender: 'подател име',
@@ -65,11 +59,11 @@
     pollMs: 150,
   };
 
-  /* ===================== ПОМОЩНИ ФУНКЦИИ ===================== */
+  /* ===================== HELPERS ===================== */
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const norm = (s) => (s || '').replace(/\s+/g, ' ').trim().toLowerCase();
 
-  // "RET63571367473" -> "63571367473" (само цифрите)
+  // "RET63571367473" -> "63571367473" (digits only)
   function cleanScan(raw) {
     return String(raw || '').replace(/\D+/g, '');
   }
@@ -86,7 +80,7 @@
     return document.querySelector(CFG.resultsTable);
   }
 
-  // Намира индексите на колоните по заглавие
+  // Locate column indexes by heading text
   function detectColumns(table) {
     const ths = [...table.querySelectorAll('thead th')].map((th) =>
       norm(th.textContent.replace(/activate.*/i, '').replace(/[:*]/g, ''))
@@ -106,7 +100,7 @@
     };
   }
 
-  // Изключва датовите филтри (веднъж), за да е търсенето независимо от дата
+  // Turn the activation-date filters off so the search is not limited by date
   function disableDateFilters() {
     [CFG.dateFromActivation, CFG.dateToActivation].forEach((sel) => {
       const cb = document.querySelector(sel);
@@ -121,11 +115,11 @@
     });
   }
 
-  // Стартира търсене по номер и изчаква резултата
+  // Run a search for one waybill number and wait for the result
   async function searchWaybill(cleanNum) {
     const input = document.querySelector(CFG.consignmentInput);
     const btn = document.querySelector(CFG.searchButton);
-    if (!input || !btn) return { status: 'error', msg: 'Формата не е намерена (проверете дали сте на страницата "Пратки/Справка").' };
+    if (!input || !btn) return { status: 'error', msg: 'Search form not found. Make sure you are on the consignments report page.' };
 
     setNativeValue(input, cleanNum);
     btn.click();
@@ -136,7 +130,7 @@
       const table = getTable();
       if (!table) continue;
 
-      // Празен резултат (DataTables маркер)
+      // Empty result (DataTables marker)
       if (table.querySelector('td.dataTables_empty')) {
         return { status: 'notfound' };
       }
@@ -166,12 +160,12 @@
           multiple: matches.length > 1 ? matches.length : 0,
         };
       }
-      // Иначе – все още се презарежда (стар резултат); продължаваме да чакаме
+      // Otherwise the table is still refreshing with the previous result; keep waiting
     }
     return { status: 'timeout' };
   }
 
-  /* ===================== СЪСТОЯНИЕ ===================== */
+  /* ===================== STATE ===================== */
   const scans = []; // {waybill, ref1, sender, status, raw, time, multiple}
   let processing = false;
   const queue = [];
@@ -226,7 +220,7 @@
   function buildUI() {
     const fab = document.createElement('button');
     fab.id = 'srs-fab';
-    fab.textContent = '↩ Returns search';
+    fab.textContent = 'Returns search';
     document.body.appendChild(fab);
 
     const overlay = document.createElement('div');
@@ -234,39 +228,39 @@
     overlay.innerHTML = `
       <div id="srs-modal">
         <div id="srs-head">
-          <h2>↩ Сканиране на върнати товарителници</h2>
-          <button id="srs-close" title="Затвори">×</button>
+          <h2>Returned consignments scanner</h2>
+          <button id="srs-close" title="Close">&times;</button>
         </div>
         <div id="srs-body">
           <div id="srs-scanwrap">
-            <input id="srs-scan" placeholder="Сканирай баркод тук (RET…)" autocomplete="off" />
-            <button id="srs-go" title="Търси">Търси</button>
+            <input id="srs-scan" placeholder="Scan a barcode here (RET...)" autocomplete="off" />
+            <button id="srs-go" title="Search">Search</button>
           </div>
           <div id="srs-status"></div>
           <div id="srs-counts"></div>
           <table class="srs-tbl">
             <thead><tr>
               <th style="width:28px">#</th>
-              <th>Товарителница</th>
-              <th>Референция 1</th>
-              <th>Получател име</th>
-              <th>Получател адрес</th>
-              <th>Подател име</th>
-              <th>Подател адрес</th>
-              <th style="width:48px">Пакети</th>
-              <th style="width:74px">Заявка</th>
-              <th style="width:84px">Дата</th>
-              <th>Статус</th>
-              <th style="width:40px" title="Резултат от търсенето">✓/✗</th>
+              <th>Waybill</th>
+              <th>Reference 1</th>
+              <th>Recipient name</th>
+              <th>Recipient address</th>
+              <th>Sender name</th>
+              <th>Sender address</th>
+              <th style="width:48px">Parcels</th>
+              <th style="width:74px">Order no.</th>
+              <th style="width:84px">Date</th>
+              <th>Status</th>
+              <th style="width:40px" title="Search result">Result</th>
               <th style="width:28px"></th>
             </tr></thead>
             <tbody id="srs-rows"></tbody>
           </table>
         </div>
         <div id="srs-foot">
-          <button class="srs-btn ghost" id="srs-clear">Изчисти списъка</button>
-          <button class="srs-btn ghost" id="srs-csv">⬇ CSV</button>
-          <button class="srs-btn primary" id="srs-export">⬇ Изтегли Excel (.xlsx)</button>
+          <button class="srs-btn ghost" id="srs-clear">Clear list</button>
+          <button class="srs-btn ghost" id="srs-csv">Download CSV</button>
+          <button class="srs-btn primary" id="srs-export">Download Excel (.xlsx)</button>
         </div>
       </div>`;
     document.body.appendChild(overlay);
@@ -295,7 +289,7 @@
     overlay.querySelector('#srs-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-    // Обработка на скан (Enter от баркод четеца, или бутона "Търси")
+    // Handle a scan (Enter from the barcode reader, or the Search button)
     const submit = () => { const raw = scan.value; scan.value = ''; enqueueScan(raw, setStatus); };
     scan.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') { e.preventDefault(); submit(); }
@@ -303,7 +297,7 @@
     overlay.querySelector('#srs-go').addEventListener('click', submit);
 
     overlay.querySelector('#srs-clear').addEventListener('click', () => {
-      if (scans.length && !confirm('Изчистване на целия списък?')) return;
+      if (scans.length && !confirm('Clear the whole list?')) return;
       scans.length = 0;
       renderRows();
       scan.focus();
@@ -318,9 +312,9 @@
 
   function enqueueScan(raw, setStatus) {
     const num = cleanScan(raw);
-    if (!num) { setStatus('Празен/невалиден скан.', 'err'); return; }
+    if (!num) { setStatus('Empty or invalid scan.', 'err'); return; }
     if (scans.some((s) => s.waybill === num && s.status !== 'notfound')) {
-      setStatus('Вече сканирана: ' + num, 'info');
+      setStatus('Already scanned: ' + num, 'info');
       return;
     }
     queue.push({ raw, num, setStatus });
@@ -332,22 +326,22 @@
     processing = true;
     while (queue.length) {
       const { raw, num, setStatus } = queue.shift();
-      setStatus('Търсене: ' + num + ' …', 'info');
+      setStatus('Searching ' + num + '...', 'info');
       let res;
       try { res = await searchWaybill(num); } catch (err) { res = { status: 'error', msg: String(err) }; }
 
       if (res.status === 'found') {
         scans.push({ waybill: res.waybill, ref1: res.ref1, receiver: res.receiver, receiverAddr: res.receiverAddr, sender: res.sender, senderAddr: res.senderAddr, packages: res.packages, order: res.order, date: res.date, statusText: res.statusText, status: 'found', raw, time: new Date(), multiple: res.multiple });
-        const extra = res.multiple ? ` (внимание: ${res.multiple} реда)` : '';
-        setStatus(`✓ ${res.waybill} — ${res.ref1 || '(без Референция 1)'}${extra}`, 'ok');
+        const extra = res.multiple ? ` (warning: ${res.multiple} rows matched)` : '';
+        setStatus(`Found ${res.waybill} - ${res.ref1 || '(no Reference 1)'}${extra}`, 'ok');
       } else if (res.status === 'notfound') {
         scans.push({ waybill: num, ref1: '', receiver: '', receiverAddr: '', sender: '', senderAddr: '', packages: '', order: '', date: '', statusText: '', status: 'notfound', raw, time: new Date() });
-        setStatus('✗ Не е намерена: ' + num, 'err');
+        setStatus('Not found: ' + num, 'err');
       } else if (res.status === 'timeout') {
         scans.push({ waybill: num, ref1: '', receiver: '', receiverAddr: '', sender: '', senderAddr: '', packages: '', order: '', date: '', statusText: '', status: 'timeout', raw, time: new Date() });
-        setStatus('⏱ Изтече времето за: ' + num, 'err');
+        setStatus('Timed out: ' + num, 'err');
       } else {
-        setStatus('Грешка: ' + (res.msg || 'неизвестна'), 'err');
+        setStatus('Error: ' + (res.msg || 'unknown'), 'err');
       }
       renderRows();
     }
@@ -364,7 +358,7 @@
       if (s.status !== 'found') tr.className = 'srs-notfound';
       const badge = s.status === 'found'
         ? '<span class="srs-badge ok">OK</span>'
-        : `<span class="srs-badge no">${s.status === 'timeout' ? '⏱' : 'няма'}</span>`;
+        : `<span class="srs-badge no">${s.status === 'timeout' ? 'timeout' : 'none'}</span>`;
       tr.innerHTML = `
         <td>${idx + 1}</td>
         <td>${esc(s.waybill)}</td>
@@ -378,7 +372,7 @@
         <td>${esc(s.date)}</td>
         <td>${esc(s.statusText)}</td>
         <td>${badge}</td>
-        <td><button class="srs-del" title="Премахни" data-i="${idx}">×</button></td>`;
+        <td><button class="srs-del" title="Remove" data-i="${idx}">×</button></td>`;
       tbody.appendChild(tr);
     });
     tbody.querySelectorAll('.srs-del').forEach((b) =>
@@ -390,57 +384,57 @@
     const found = scans.filter((s) => s.status === 'found').length;
     const bad = scans.length - found;
     const c = document.querySelector('#srs-counts');
-    if (c) c.textContent = `Общо сканирания: ${scans.length}  •  намерени: ${found}  •  проблемни: ${bad}`;
+    if (c) c.textContent = `Scans: ${scans.length}   Found: ${found}   Problems: ${bad}`;
   }
 
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
   }
 
-  // Общ източник за двата експорта — един ред данни, два формата.
+  // One row source for both exports - same data, two formats.
   function buildRows() {
     return scans.map((s, i) => ({
-      '№': i + 1,
-      'Товарителница': s.waybill,
-      'Референция 1': s.ref1,
-      'Получател име': s.receiver,
-      'Получател адрес': s.receiverAddr,
-      'Подател име': s.sender,
-      'Подател адрес': s.senderAddr,
-      'Пакети': s.packages,
-      'Номер заявка': s.order,
-      'Дата': s.date,
-      'Статус': s.statusText,
-      'Резултат': s.status === 'found' ? 'намерена' : (s.status === 'timeout' ? 'таймаут' : 'не е намерена'),
-      'Суров скан': s.raw,
-      'Време': s.time ? s.time.toLocaleString('bg-BG') : '',
+      'No.': i + 1,
+      'Waybill': s.waybill,
+      'Reference 1': s.ref1,
+      'Recipient name': s.receiver,
+      'Recipient address': s.receiverAddr,
+      'Sender name': s.sender,
+      'Sender address': s.senderAddr,
+      'Parcels': s.packages,
+      'Order no.': s.order,
+      'Date': s.date,
+      'Status': s.statusText,
+      'Result': s.status === 'found' ? 'found' : (s.status === 'timeout' ? 'timeout' : 'not found'),
+      'Raw scan': s.raw,
+      'Scanned at': s.time ? s.time.toLocaleString('en-GB') : '',
     }));
   }
 
   function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
 
   function exportCsv(setStatus) {
-    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    if (!scans.length) { setStatus('The list is empty.', 'err'); return; }
     const rows = buildRows();
     const headers = Object.keys(rows[0]);
     const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
-    // BOM -> Excel отваря UTF-8 кирилицата коректно.
+    // BOM so Excel reads the UTF-8 Cyrillic data correctly.
     const csv = '\ufeff' + [headers.map(q).join(',')]
       .concat(rows.map((r) => headers.map((h) => q(r[h])).join(',')))
       .join('\r\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
-    a.download = `speedy-vrnati-${stamp()}.csv`;
+    a.download = `speedy-returns-${stamp()}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
-    setStatus('CSV файлът е генериран.', 'ok');
+    setStatus('CSV file generated.', 'ok');
   }
 
   function exportXlsx(setStatus) {
-    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    if (!scans.length) { setStatus('The list is empty.', 'err'); return; }
     if (typeof XLSX === 'undefined') {
-      setStatus('XLSX не е зареден (CSP?). Пробвам CSV…', 'err');
+      setStatus('XLSX library did not load (CSP?). Falling back to CSV...', 'err');
       exportCsv(setStatus);
       return;
     }
@@ -448,12 +442,12 @@
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 30 }, { wch: 26 }, { wch: 40 }, { wch: 26 }, { wch: 40 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 14 }, { wch: 16 }, { wch: 18 }];
     const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Върнати');
-    XLSX.writeFile(wb, `speedy-vrnati-${stamp()}.xlsx`);
-    setStatus('Excel файлът е генериран.', 'ok');
+    XLSX.utils.book_append_sheet(wb, ws, 'Returns');
+    XLSX.writeFile(wb, `speedy-returns-${stamp()}.xlsx`);
+    setStatus('Excel file generated.', 'ok');
   }
 
-  /* ===================== СТАРТ ===================== */
+  /* ===================== BOOT ===================== */
   function init() {
     injectStyle();
     ui = buildUI();

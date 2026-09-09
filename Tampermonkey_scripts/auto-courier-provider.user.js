@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Auto Courier Provider
 // @namespace    http://tampermonkey.net/
-// @version      1.3
-// @description  Автоматично визначає кур'єра по тракінг-номеру і зберігає
+// @version      1.4
+// @description  Detects the courier from the tracking number and saves the tracking info
 // @match        */wp-admin/post.php?post=*&action=edit*
 // @match        */wp-admin/admin.php?page=wc-orders&action=edit*
 // @grant        none
@@ -63,14 +63,15 @@
         const saveButton = widget.querySelector('.button-save-form');
 
         const tracking = trackingInput ? trackingInput.value.trim() : '';
-        if (!tracking) { alert('Tracking number порожній!'); return; }
-        if (!providerSelect) { alert('Поле "Provider" не знайдено на сторінці.'); return; }
+        if (!tracking) { alert('The tracking number field is empty.'); return; }
+        if (!providerSelect) { alert('The "Provider" field was not found on this page.'); return; }
 
         // A provider picked by hand always wins — never overwrite the operator.
         if (!providerSelect.value) {
             const slug = detectProvider(tracking);
             if (!slug) {
-                alert('Невідомий формат тракінгу (' + tracking + ').\nВиберіть провайдера вручну.');
+                alert('Unrecognised tracking number format: ' + tracking +
+                      '\n\nSelect the provider manually.');
                 return;
             }
 
@@ -82,22 +83,23 @@
                     [...providerSelect.options]
                         .filter((o) => o.value && o.value.toLowerCase().includes(slug.split('-')[0]))
                         .map((o) => o.value + ' | ' + o.textContent.trim()));
-                alert('Кур\'єр розпізнаний як "' + slug + '", але такого провайдера немає у списку.\n\n' +
-                      'Виберіть вручну, або додайте його в\n' +
-                      'WooCommerce → Settings → Shipping → Shipment Tracking.\n' +
-                      '(деталі — у консолі)');
+                alert('Detected the courier as "' + slug + '", but there is no such ' +
+                      'provider in the list.\n\n' +
+                      'Select one manually, or add it under\n' +
+                      'WooCommerce > Settings > Shipping > Shipment Tracking.\n\n' +
+                      'Similar entries are listed in the browser console.');
                 return;
             }
 
             setProvider(providerSelect, option.value);
 
             if (!providerSelect.value) {
-                alert('Не вдалося виставити провайдера "' + option.value + '".\nВиберіть вручну.');
+                alert('Could not set the provider to "' + option.value + '".\n\nSelect it manually.');
                 return;
             }
         }
 
-        if (!saveButton) { alert('Кнопка "Save Tracking" не знайдена.'); return; }
+        if (!saveButton) { alert('The "Save Tracking" button was not found.'); return; }
         // Let the select2/change handlers settle before submitting.
         setTimeout(() => saveButton.click(), 100);
     }
@@ -113,7 +115,7 @@
         btn.id = 'quick-save-tracking';
         btn.type = 'button';
         btn.className = 'button button-primary btn_ast2';
-        btn.textContent = '📦 Quick Save';
+        btn.textContent = 'Quick Save';
         btn.style.cssText = 'margin-top:10px;margin-left:10px;background:#28a745;border-color:#28a745';
         addBtn.parentNode.insertBefore(btn, addBtn.nextSibling);
 

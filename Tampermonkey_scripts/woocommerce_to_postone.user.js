@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  WooCommerce to Postone - Fixed values + Dynamic weight + Select2 fix
+// @version      3.1
+// @description  Copies a WooCommerce order and auto-fills the Postone shipment form
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
 // @match        *://*/wp-admin/admin.php?page=wc-orders&action=edit*
@@ -16,11 +16,11 @@
 (function() {
     'use strict';
 
-    console.log('[Postone Script v3.0] Loaded on:', window.location.href);
+    console.log('[Postone Script v3.1] Loaded on:', window.location.href);
 
     // CONFIGURATION
     const CONFIG = {
-        weightPerItem: 0.060, // Вага за 1 товар (кг) - 60 грамів
+        weightPerItem: 0.060, // kg per item (60 g)
         // FIXED VALUES
         fixedProductDescription: 'Supplement Capsules',
         fixedProductQuantity: 1,
@@ -78,7 +78,7 @@
         console.log('[WooCommerce] Order page found');
 
         const button = document.createElement('button');
-        button.textContent = '📋 Copy for Postone';
+        button.textContent = 'Copy for Postone';
         button.className = 'button button-primary button-large';
         button.style.cssText = 'margin: 10px; padding: 10px 20px; font-size: 14px;';
 
@@ -121,7 +121,7 @@
             };
 
             GM_setValue('postoneOrderData', JSON.stringify(orderData));
-            showNotification('✅ Data copied!', 'success');
+            showNotification('Order data copied.', 'success');
             console.log('[WooCommerce] Data saved:', orderData);
         });
     }
@@ -155,7 +155,7 @@
 
         // Create button
         const fillButton = document.createElement('button');
-        fillButton.textContent = '🔄 AUTO-FILL FROM WOOCOMMERCE';
+        fillButton.textContent = 'Auto-fill from WooCommerce';
         fillButton.className = 'btn btn-success';
         fillButton.style.cssText = `
             margin: 10px;
@@ -187,20 +187,20 @@
             const dataStr = GM_getValue('postoneOrderData', null);
 
             if (!dataStr) {
-                alert('❌ No data from WooCommerce.\n\nFirst open an order and click "📋 Copy for Postone"');
+                alert('No order data found.\n\nOpen a WooCommerce order first and click "Copy for Postone".');
                 return;
             }
 
             let data;
             try { data = JSON.parse(dataStr); } catch (err) {
-                alert('❌ Stored data is corrupted. Copy the order again.');
+                alert('The stored order data is unreadable. Copy the order again.');
                 return;
             }
             console.log('[Postone] Data loaded:', data);
 
             const mins = Math.round((Date.now() - data.timestamp) / 60000);
             if (mins > 60 && !confirm(
-                `⚠️ Data for order #${data.orderNumber} was copied ${mins} minutes ago.\n\n` +
+                `The data for order #${data.orderNumber} was copied ${mins} minutes ago.\n\n` +
                 `Fill the form with it anyway?`)) return;
 
             fillPostoneForm(data);
@@ -225,7 +225,7 @@
 
             if (data.consumed) {
                 console.log('[Postone] Data already used for a shipment — not auto-filling again.');
-                showNotification('ℹ️ Copy the order again to auto-fill', 'info');
+                showNotification('Already used. Copy the order again to auto-fill.', 'info');
                 return;
             }
             if (data.timestamp <= Date.now() - (60 * 60 * 1000)) return;
@@ -290,7 +290,7 @@
                 if (data.country) {
                     setCountrySelect('#country_id', data.country, 'Country');
                 } else {
-                    console.log('⚠️ [Country] No country code');
+                    console.log('[Country] no country code');
                 }
             }, 200);
 
@@ -300,7 +300,7 @@
                 if (data.country) {
                     setCountrySelect('#phone_country_id', data.country, 'Phone country');
                 } else {
-                    console.log('⚠️ [Phone country] No country code');
+                    console.log('[Phone country] no country code');
                 }
             }, 300);
 
@@ -314,7 +314,7 @@
 
             // SUCCESS
             setTimeout(() => {
-                showNotification('✅ Form filled!', 'success');
+                showNotification('Shipment form filled.', 'success');
                 console.log('\n[Postone] === COMPLETE ===');
             }, 600);
 
@@ -324,17 +324,17 @@
     // Set text field
     function setFieldValue(selector, value, fieldName) {
         if (!value && value !== 0) {
-            console.log(`⚠️ [${fieldName}] Empty value`);
+            console.log(`[${fieldName}] empty value, skipped`);
             return false;
         }
 
         const element = document.querySelector(selector);
         if (!element) {
-            console.log(`❌ [${fieldName}] Field ${selector} not found`);
+            console.log(`[${fieldName}] field ${selector} not found`);
             return false;
         }
 
-        console.log(`✅ [${fieldName}] Setting: "${value}"`);
+        console.log(`[${fieldName}] set to "${value}"`);
 
         try {
             element.focus();
@@ -351,7 +351,7 @@
             element.blur();
             return true;
         } catch (error) {
-            console.log(`❌ [${fieldName}] Error:`, error);
+            console.log(`[${fieldName}] error:`, error);
             return false;
         }
     }
@@ -359,17 +359,17 @@
     // Set Select2 field (for #content)
     function setSelect2Value(selector, value, fieldName) {
         if (!value) {
-            console.log(`⚠️ [${fieldName}] Empty value`);
+            console.log(`[${fieldName}] empty value, skipped`);
             return false;
         }
 
         const select = document.querySelector(selector);
         if (!select) {
-            console.log(`❌ [${fieldName}] Select ${selector} not found`);
+            console.log(`[${fieldName}] select ${selector} not found`);
             return false;
         }
 
-        console.log(`🔄 [${fieldName}] Setting Select2: "${value}"`);
+        console.log(`[${fieldName}] setting select2 to "${value}"`);
 
         try {
             // Create new option if doesn't exist
@@ -380,24 +380,24 @@
                 option.text = value;
                 option.selected = true;
                 select.appendChild(option);
-                console.log(`  ✅ Created new option: "${value}"`);
+                console.log(`  created new option "${value}"`);
             } else {
                 option.selected = true;
-                console.log(`  ✅ Option exists, selected`);
+                console.log('  option already existed, selected');
             }
 
             // Trigger Select2 update
             if (window.jQuery) {
                 window.jQuery(select).val(value).trigger('change');
-                console.log(`  ✅ jQuery trigger executed`);
+                console.log('  jQuery change triggered');
             }
 
             select.dispatchEvent(new Event('change', { bubbles: true }));
 
-            console.log(`✅ [${fieldName}] Set to: "${value}"`);
+            console.log(`[${fieldName}] set to "${value}"`);
             return true;
         } catch (error) {
-            console.log(`❌ [${fieldName}] Error:`, error);
+            console.log(`[${fieldName}] error:`, error);
             return false;
         }
     }
@@ -405,24 +405,24 @@
     // Set country dropdown
     function setCountrySelect(selector, countryCode, fieldName) {
         if (!countryCode) {
-            console.log(`⚠️ [${fieldName}] No country code`);
+            console.log(`[${fieldName}] no country code`);
             return false;
         }
 
         const select = document.querySelector(selector);
         if (!select) {
-            console.log(`❌ [${fieldName}] Select ${selector} not found`);
+            console.log(`[${fieldName}] select ${selector} not found`);
             return false;
         }
 
         const countryId = COUNTRY_MAP[countryCode];
 
         if (!countryId) {
-            console.log(`⚠️ [${fieldName}] Country ${countryCode} not in mapping`);
+            console.log(`[${fieldName}] country ${countryCode} is not in the mapping`);
             return false;
         }
 
-        console.log(`✅ [${fieldName}] Setting: ${countryCode} (ID: ${countryId})`);
+        console.log(`[${fieldName}] set to ${countryCode} (ID: ${countryId})`);
 
         try {
             select.value = countryId;
@@ -434,7 +434,7 @@
             select.dispatchEvent(new Event('change', { bubbles: true }));
             return true;
         } catch (error) {
-            console.log(`❌ [${fieldName}] Error:`, error);
+            console.log(`[${fieldName}] error:`, error);
             return false;
         }
     }

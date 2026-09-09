@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Order Selector (PostOne + DHL)
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Paste a list of order numbers and tick the matching rows. Replaces the separate PostOne and DHL selectors.
 // @match        https://postone.eu/orders*
 // @match        https://app2.dhlexpresscommerce.com/orders*
@@ -72,7 +72,7 @@
         let msg = `Selected ${selected} of ${wanted.size} order(s).`;
         if (already) msg += `\n${already} were already ticked.`;
         if (missing.length) {
-            msg += `\n\n⚠️ Not on this page (${missing.length}):\n${missing.join(', ')}` +
+            msg += `\n\nNot on this page (${missing.length}):\n${missing.join(', ')}` +
                    `\n\nThese may be on another page of the table or outside the current filter.`;
         }
         show(msg, missing.length ? 'warn' : 'ok');

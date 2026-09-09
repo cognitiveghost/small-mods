@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Order Selector Shopify
 // @namespace    http://tampermonkey.net/
-// @version      2.1
+// @version      2.2
 // @description  Select Shopify orders from a pasted list using ONE search query (no page-by-page crawling)
 // @match        https://admin.shopify.com/store/*/orders*
 // @grant        none
@@ -201,7 +201,7 @@
 
         const notFound = targets.filter(t => !t.matched).map(t => t.raw);
         let msg = `Done. Selected ${selected} of ${total} orders.`;
-        if (notFound.length) msg += `\n\n⚠️ Not found (not in this view / no match):\n${notFound.join(', ')}`;
+        if (notFound.length) msg += `\n\nNot found (not in this view / no match):\n${notFound.join(', ')}`;
         msg += `\n\n(Click to dismiss)`;
         status(msg);
         document.getElementById('order-selector-status')

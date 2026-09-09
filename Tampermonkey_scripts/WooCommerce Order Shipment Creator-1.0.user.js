@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.5
+// @version      1.6
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -107,7 +107,7 @@
             if (hits.length > 1) {
                 // Only reachable on a plain-numeric store where one order's number is
                 // another's post id. Refuse to guess rather than ship the wrong parcel.
-                ambiguous.push(raw + ' → #' + hits.map(function (h) {
+                ambiguous.push(raw + ' -> #' + hits.map(function (h) {
                     return h.label + ' (id ' + h.id + ')';
                 }).join(', #'));
                 return;
@@ -160,17 +160,17 @@
         const problems = function () {
             let out = '';
             if (notFound.length) {
-                out += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n' +
+                out += '\n\nNot found on this page (' + notFound.length + '):\n' +
                        notFound.join('\n') +
                        '\n\nNote: a number with its prefix stripped (10861 instead of ' +
                        'UK10861) is not accepted — use the grid number or the post id.';
             }
             if (ambiguous.length) {
-                out += '\n\n\u26a0\ufe0f Ambiguous — these match more than one order, ' +
+                out += '\n\nAmbiguous - these match more than one order, ' +
                        'paste the post id instead:\n' + ambiguous.join('\n');
             }
             if (duplicates.length) {
-                out += '\n\n\u2139\ufe0f Skipped ' + duplicates.length + ' duplicate line(s) — ' +
+                out += '\n\nSkipped ' + duplicates.length + ' duplicate line(s) - ' +
                        'the same order was listed more than once:\n' + duplicates.join('\n');
             }
             return out;
@@ -239,7 +239,7 @@
                 if (btn) {
                     btn.click();
                 } else {
-                    toast('⚠️ Order #' + postId + ': "Create Shipment" button never appeared.\n' +
+                    toast('Order ' + postId + ': the "Create Shipment" button never appeared.\n' +
                           'Create this shipment manually.', false);
                 }
             },

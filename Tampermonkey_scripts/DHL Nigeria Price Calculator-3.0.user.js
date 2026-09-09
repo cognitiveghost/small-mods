@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         DHL Nigeria Price Calculator
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Smart price distribution for Nigeria customs (<=200 EUR total, <=50 EUR per item)
 // @match        https://app2.dhlexpresscommerce.com/orders/*
 // @grant        none
@@ -107,12 +107,12 @@
 
     function redistributePrices() {
         const items = readRows();
-        if (!items.length) { alert('❌ No items found!'); return; }
+        if (!items.length) { alert('No items found in the order.'); return; }
 
         const before = items.reduce((s, it) => s + it.price * it.qty, 0);
         const res = computePrices(items.map((it) => ({ qty: it.qty, price: it.price })), LIMITS);
 
-        if (res.error) { alert('⚠️ ' + res.error); return; }
+        if (res.error) { alert(res.error); return; }
 
         const changes = [];
         let after = 0;
@@ -121,19 +121,18 @@
             writePrice(it.input, p);
             after += p * it.qty;
             if (Math.abs(p - it.price) > 0.005) {
-                changes.push(`  • ${it.name || it.sku || 'Item ' + (i + 1)} (x${it.qty}): ` +
-                             `${it.price.toFixed(2)}€ → ${p.toFixed(2)}€`);
+                changes.push(`  ${it.name || it.sku || 'Item ' + (i + 1)} (x${it.qty}): ` +
+                             `${it.price.toFixed(2)} -> ${p.toFixed(2)} EUR`);
             }
         });
 
-        const MODE = { cap: 'capped at 50€', smart: 'smart distribution', flat: 'spread evenly' };
+        const MODE = { cap: 'capped at 50 EUR', smart: 'smart distribution', flat: 'spread evenly' };
         alert(
-            `✅ DONE — ${MODE[res.mode]}\n\n` +
-            `📊 Summary\n━━━━━━━━━━━━━━━━\n` +
-            `Original: ${before.toFixed(2)}€\n` +
-            `Final:    ${after.toFixed(2)}€  (limit ${LIMITS.MAX_TOTAL}€)\n` +
-            `Items changed: ${changes.length}/${items.length}\n` +
-            (changes.length ? `\n✏️ Changes:\n${changes.join('\n')}` : '')
+            'Done - ' + MODE[res.mode] + '\n\n' +
+            'Original total: ' + before.toFixed(2) + ' EUR\n' +
+            'New total:      ' + after.toFixed(2) + ' EUR (limit ' + LIMITS.MAX_TOTAL + ' EUR)\n' +
+            'Items changed:  ' + changes.length + ' of ' + items.length +
+            (changes.length ? '\n\nChanges:\n' + changes.join('\n') : '')
         );
     }
 
@@ -141,7 +140,7 @@
         if (document.getElementById('nigeria-calc-button')) return;
         const button = document.createElement('button');
         button.id = 'nigeria-calc-button';
-        button.textContent = '🇳🇬 Calculate Nigeria Prices';
+        button.textContent = 'Calculate Nigeria Prices';
         button.style.cssText = `position:fixed;top:15px;left:100px;z-index:9999;padding:12px 20px;
             background:#008751;color:#fff;border:none;border-radius:6px;cursor:pointer;
             font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.2)`;
