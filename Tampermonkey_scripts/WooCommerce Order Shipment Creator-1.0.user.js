@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -72,15 +72,18 @@
             return;
         }
 
-        // Build map of orderNumber → editURL from current page rows
+        // Build map of displayed orderNumber → {editURL, post/order id}.
+        // The queue must hold the ID, because the order page identifies itself by the
+        // ?post=/?id= URL param. Those match on a plain install but diverge as soon as a
+        // sequential-order-number plugin renames #43075 to #BG-1042.
         const orderMap = {};
         document.querySelectorAll('a.order-view').forEach(function (link) {
             const strong = link.querySelector('strong');
             if (!strong) return;
             const match = strong.textContent.match(/^#?(\d+)/);
-            if (match) {
-                orderMap[match[1]] = link.href;
-            }
+            if (!match) return;
+            const idMatch = link.href.match(/[?&](?:post|id)=(\d+)/);
+            orderMap[match[1]] = { url: link.href, id: idMatch ? idMatch[1] : match[1] };
         });
 
         const found = [];
@@ -88,7 +91,7 @@
 
         requested.forEach(function (num) {
             if (orderMap[num]) {
-                found.push({ num: num, url: orderMap[num] });
+                found.push({ num: num, url: orderMap[num].url, id: orderMap[num].id });
             } else {
                 notFound.push(num);
             }
@@ -107,7 +110,7 @@
             !confirm('This will open ' + found.length + ' tabs at once. Continue?')) return;
 
         const existingQueue = safeParseQueue();
-        saveQueue(Array.from(new Set(existingQueue.concat(found.map(function (f) { return f.num; })))));
+        saveQueue(Array.from(new Set(existingQueue.concat(found.map(function (f) { return f.id; })))));
 
         // Opened synchronously: window.open must stay inside the click gesture or the
         // popup blocker drops every tab after the first.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      2.7
+// @version      2.8
 // @description  WooCommerce to Postone - Fixed values + Dynamic weight + Select2 fix
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
@@ -16,7 +16,7 @@
 (function() {
     'use strict';
 
-    console.log('[Postone Script v2.6] Loaded on:', window.location.href);
+    console.log('[Postone Script v2.8] Loaded on:', window.location.href);
 
     // CONFIGURATION
     const CONFIG = {
@@ -126,10 +126,12 @@
         });
     }
 
-    // Get product quantity
+    // Sum EVERY line item. Reading only the first one under-declared the weight on any
+    // multi-line order, which is a customs problem, not a cosmetic one.
     function getProductQuantity() {
-        const qtyInput = document.querySelector('input[name^="order_item_qty"]');
-        return qtyInput ? parseInt(qtyInput.value) : 1;
+        const total = [...document.querySelectorAll('input[name^="order_item_qty"]')]
+            .reduce((sum, el) => sum + (parseInt(el.value, 10) || 0), 0);
+        return total > 0 ? total : 1;
     }
 
     // Postone page
@@ -438,17 +440,23 @@
     }
 
     // Helper functions
+    // Not input-only: WooCommerce renders _shipping_state (and _shipping_country) as a
+    // <select> wherever the country has states/provinces, so an input[name] lookup
+    // silently returned '' and the Postone "Region" field stayed empty.
     function getValue(name) {
-        const input = document.querySelector(`input[name="${name}"]`);
-        return input ? input.value.trim() : '';
+        const el = document.querySelector(`[name="${name}"]`);
+        return el ? String(el.value || '').trim() : '';
     }
 
+    // HPOS renders no "Order #" <h2>; the number lives in .woocommerce-order-data__heading.
+    // URL id stays the last resort (it is the post id, which can differ from the
+    // displayed order number when a sequential-numbers plugin is active).
     function extractOrderNumber() {
-        const heading = document.querySelector('h2');
-        if (heading && heading.textContent.includes('Order #')) {
-            const match = heading.textContent.match(/Order #(\d+)/);
-            return match ? match[1] : '';
-        }
+        const heading = document.querySelector('.woocommerce-order-data__heading') ||
+                        [...document.querySelectorAll('h1, h2, h3')]
+                            .find((h) => h.textContent.includes('Order #'));
+        const match = heading && heading.textContent.match(/Order #(\d+)/);
+        if (match) return match[1];
         const urlMatch = window.location.href.match(/(?:post|id)=(\d+)/);
         return urlMatch ? urlMatch[1] : '';
     }
