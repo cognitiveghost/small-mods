@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Speedy Returns Scanner (Върнати товарителници)
 // @namespace    dolphin.speedy.returns
-// @version      1.0.0
+// @version      1.1.0
 // @description  Мултисканиране на върнати пратки в MySpeedy: сканира баркод (напр. RET63571367473), търси по Товарителница, извлича "Референция 1" + "Подател име" и експортира в Excel (.xlsx).
 // @author       dolphin
 // @match        https://myspeedy.speedy.bg/reports/consignments*
@@ -37,6 +37,10 @@
 (function () {
   'use strict';
 
+  // --- защита от двойно зареждане / дублиран UI ---
+  if (window.__SRS_SCANNER_LOADED__) return;
+  window.__SRS_SCANNER_LOADED__ = '1.1.0';
+
   /* ===================== КОНФИГУРАЦИЯ ===================== */
   const CFG = {
     consignmentInput: '#consignment-number',
@@ -71,8 +75,8 @@
   }
 
   function setNativeValue(el, value) {
-    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-    setter.call(el, value);
+    const desc = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value');
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
     el.dispatchEvent(new Event('input', { bubbles: true }));
     el.dispatchEvent(new Event('change', { bubbles: true }));
     el.dispatchEvent(new Event('keyup', { bubbles: true }));
@@ -190,6 +194,8 @@
     #srs-scanwrap{display:flex;gap:10px;margin-bottom:12px}
     #srs-scan{flex:1;padding:12px 14px;font-size:18px;border:2px solid #c8102e;border-radius:8px;outline:none}
     #srs-scan:focus{box-shadow:0 0 0 3px rgba(200,16,46,.2)}
+    #srs-go{background:#c8102e;color:#fff;border:none;border-radius:8px;padding:0 18px;font:600 15px system-ui;cursor:pointer}
+    #srs-go:hover{background:#a50d26}
     #srs-status{padding:8px 12px;border-radius:6px;margin-bottom:10px;font-weight:600;min-height:18px;display:none}
     #srs-status.ok{background:#e6f7ea;color:#137333;display:block}
     #srs-status.err{background:#fce8e6;color:#c5221f;display:block}
@@ -234,6 +240,7 @@
         <div id="srs-body">
           <div id="srs-scanwrap">
             <input id="srs-scan" placeholder="Сканирай баркод тук (RET…)" autocomplete="off" />
+            <button id="srs-go" title="Търси">Търси</button>
           </div>
           <div id="srs-status"></div>
           <div id="srs-counts"></div>
@@ -258,6 +265,7 @@
         </div>
         <div id="srs-foot">
           <button class="srs-btn ghost" id="srs-clear">Изчисти списъка</button>
+          <button class="srs-btn ghost" id="srs-csv">⬇ CSV</button>
           <button class="srs-btn primary" id="srs-export">⬇ Изтегли Excel (.xlsx)</button>
         </div>
       </div>`;
@@ -287,15 +295,12 @@
     overlay.querySelector('#srs-close').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
-    // Обработка на скан (Enter от баркод четеца или ръчно)
+    // Обработка на скан (Enter от баркод четеца, или бутона "Търси")
+    const submit = () => { const raw = scan.value; scan.value = ''; enqueueScan(raw, setStatus); };
     scan.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        const raw = scan.value;
-        scan.value = '';
-        enqueueScan(raw, setStatus);
-      }
+      if (e.key === 'Enter') { e.preventDefault(); submit(); }
     });
+    overlay.querySelector('#srs-go').addEventListener('click', submit);
 
     overlay.querySelector('#srs-clear').addEventListener('click', () => {
       if (scans.length && !confirm('Изчистване на целия списък?')) return;
@@ -304,6 +309,7 @@
       scan.focus();
     });
     overlay.querySelector('#srs-export').addEventListener('click', () => exportXlsx(setStatus));
+    overlay.querySelector('#srs-csv').addEventListener('click', () => exportCsv(setStatus));
 
     return { overlay, scan, setStatus };
   }
@@ -388,13 +394,12 @@
   }
 
   function esc(s) {
-    return String(s || '').replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m]));
   }
 
-  function exportXlsx(setStatus) {
-    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
-    if (typeof XLSX === 'undefined') { setStatus('XLSX библиотеката не е заредена (CSP?). Виж бележката в скрипта.', 'err'); return; }
-    const rows = scans.map((s, i) => ({
+  // Общ източник за двата експорта — един ред данни, два формата.
+  function buildRows() {
+    return scans.map((s, i) => ({
       '№': i + 1,
       'Товарителница': s.waybill,
       'Референция 1': s.ref1,
@@ -410,12 +415,41 @@
       'Суров скан': s.raw,
       'Време': s.time ? s.time.toLocaleString('bg-BG') : '',
     }));
+  }
+
+  function stamp() { return new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-'); }
+
+  function exportCsv(setStatus) {
+    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    const rows = buildRows();
+    const headers = Object.keys(rows[0]);
+    const q = (v) => '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"';
+    // BOM -> Excel отваря UTF-8 кирилицата коректно.
+    const csv = '\ufeff' + [headers.map(q).join(',')]
+      .concat(rows.map((r) => headers.map((h) => q(r[h])).join(',')))
+      .join('\r\n');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+    a.download = `speedy-vrnati-${stamp()}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setStatus('CSV файлът е генериран.', 'ok');
+  }
+
+  function exportXlsx(setStatus) {
+    if (!scans.length) { setStatus('Списъкът е празен.', 'err'); return; }
+    if (typeof XLSX === 'undefined') {
+      setStatus('XLSX не е зареден (CSP?). Пробвам CSV…', 'err');
+      exportCsv(setStatus);
+      return;
+    }
+    const rows = buildRows();
     const ws = XLSX.utils.json_to_sheet(rows);
     ws['!cols'] = [{ wch: 5 }, { wch: 16 }, { wch: 30 }, { wch: 26 }, { wch: 40 }, { wch: 26 }, { wch: 40 }, { wch: 8 }, { wch: 12 }, { wch: 12 }, { wch: 24 }, { wch: 14 }, { wch: 16 }, { wch: 18 }];
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, 'Върнати');
-    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
-    XLSX.writeFile(wb, `speedy-vrnati-${stamp}.xlsx`);
+    XLSX.writeFile(wb, `speedy-vrnati-${stamp()}.xlsx`);
     setStatus('Excel файлът е генериран.', 'ok');
   }
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -13,6 +13,7 @@
     'use strict';
 
     const QUEUE_KEY = 'wc_shipment_queue';
+    const QUEUE_TTL_MS = 10 * 60 * 1000;   // a queue older than this is abandoned, not replayed
 
     // ─── ORDERS LIST PAGE ────────────────────────────────────────────────────
     function isOrdersListPage() {
@@ -102,28 +103,32 @@
             return;
         }
 
-        // Save queue of found order IDs to localStorage for order pages to pick up
-        const existingQueue = safeParseQueue();
-        const combined = Array.from(new Set(existingQueue.concat(found.map(function (f) { return f.num; }))));
-        localStorage.setItem(QUEUE_KEY, JSON.stringify(combined));
+        if (found.length > 10 &&
+            !confirm('This will open ' + found.length + ' tabs at once. Continue?')) return;
 
-        // Open each found order in a new tab with a 600ms stagger
-        found.forEach(function (order, index) {
-            setTimeout(function () {
-                window.open(order.url, '_blank');
-            }, index * 600);
+        const existingQueue = safeParseQueue();
+        saveQueue(Array.from(new Set(existingQueue.concat(found.map(function (f) { return f.num; })))));
+
+        // Opened synchronously: window.open must stay inside the click gesture or the
+        // popup blocker drops every tab after the first.
+        let opened = 0;
+        found.forEach(function (order) {
+            if (window.open(order.url, '_blank')) opened++;
         });
 
-        // Show report
-        setTimeout(function () {
-            let msg = 'Opening ' + found.length + ' order(s) for shipment creation.';
-            if (notFound.length > 0) {
-                msg += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n';
-                msg += notFound.map(function (n) { return '#' + n; }).join('\n');
-                msg += '\n\nMake sure these orders are visible on the current page/filter.';
-            }
-            alert(msg);
-        }, found.length * 600 + 200);
+        let msg;
+        if (opened < found.length) {
+            msg = 'Opened only ' + opened + ' of ' + found.length + ' tabs — the popup blocker ' +
+                  'stopped the rest.\nAllow pop-ups for this site, then run it again.';
+        } else {
+            msg = 'Opening ' + opened + ' order(s) for shipment creation.';
+        }
+        if (notFound.length > 0) {
+            msg += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n' +
+                   notFound.map(function (n) { return '#' + n; }).join('\n') +
+                   '\n\nMake sure these orders are visible on the current page/filter.';
+        }
+        toast(msg, opened === found.length && notFound.length === 0);
     }
 
     // ─── SINGLE ORDER PAGE ───────────────────────────────────────────────────
@@ -144,29 +149,55 @@
         const queue = safeParseQueue();
         if (!queue.includes(postId)) return;
 
-        // Order is in queue — wait for Create Shipment button and click it
+        // Consume the entry immediately. If the click then fails we say so out loud rather
+        // than leaving the order armed to fire on the next manual visit.
+        saveQueue(safeParseQueue().filter(function (id) { return id !== postId; }));
+
         waitForElement(
             'button[data-toggle="sksoftware-postone-for-woocommerce-shipment-create"]',
             function (btn) {
-                btn.click();
-
-                // Remove this order from queue
-                const updatedQueue = safeParseQueue().filter(function (id) { return id !== postId; });
-                localStorage.setItem(QUEUE_KEY, JSON.stringify(updatedQueue));
+                if (btn) {
+                    btn.click();
+                } else {
+                    toast('⚠️ Order #' + postId + ': "Create Shipment" button never appeared.\n' +
+                          'Create this shipment manually.', false);
+                }
             },
-            10000 // wait up to 10 seconds
+            10000
         );
     }
 
     // ─── UTILITIES ───────────────────────────────────────────────────────────
+    // The queue is {ts, ids}. Anything older than QUEUE_TTL_MS is dropped, so a tab that
+    // was never opened (popup blocked, browser closed) cannot silently fire days later.
     function safeParseQueue() {
         try {
-            const raw = localStorage.getItem(QUEUE_KEY);
-            const parsed = JSON.parse(raw);
-            return Array.isArray(parsed) ? parsed : [];
+            const parsed = JSON.parse(localStorage.getItem(QUEUE_KEY));
+            if (!parsed || !Array.isArray(parsed.ids)) return [];
+            if (Date.now() - (parsed.ts || 0) > QUEUE_TTL_MS) {
+                localStorage.removeItem(QUEUE_KEY);
+                return [];
+            }
+            return parsed.ids;
         } catch (e) {
             return [];
         }
+    }
+
+    function saveQueue(ids) {
+        if (!ids.length) { localStorage.removeItem(QUEUE_KEY); return; }
+        localStorage.setItem(QUEUE_KEY, JSON.stringify({ ts: Date.now(), ids: ids }));
+    }
+
+    function toast(message, ok) {
+        const el = document.createElement('div');
+        el.textContent = message;
+        el.style.cssText = 'position:fixed;top:60px;right:20px;z-index:999999;padding:12px 18px;' +
+            'border-radius:6px;color:#fff;font:600 13px system-ui,sans-serif;max-width:320px;' +
+            'box-shadow:0 4px 12px rgba(0,0,0,.3);white-space:pre-wrap;background:' +
+            (ok ? '#28a745' : '#c5221f');
+        document.body.appendChild(el);
+        setTimeout(function () { el.remove(); }, ok ? 4000 : 12000);
     }
 
     /**
@@ -194,6 +225,7 @@
                 callback(el);
             } else if (waited >= maxWait) {
                 clearInterval(timer);
+                callback(null);
             }
         }, interval);
     }

@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         WooCommerce to Postone Auto-Fill [v2.6 FINAL]
+// @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      2.6
+// @version      2.7
 // @description  WooCommerce to Postone - Fixed values + Dynamic weight + Select2 fix
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
@@ -116,7 +116,8 @@
                 orderNumber: extractOrderNumber(),
                 // Product quantity for weight calculation
                 productQuantity: productQuantity || 1,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                consumed: false
             };
 
             GM_setValue('postoneOrderData', JSON.stringify(orderData));
@@ -138,6 +139,11 @@
         const modal = document.querySelector('#createShipment');
 
         if (!modal) {
+            if (initPostone.tries === undefined) initPostone.tries = 0;
+            if (++initPostone.tries > 15) {   // ~30s, then stop instead of polling forever
+                console.log('[Postone] #createShipment never appeared — giving up.');
+                return;
+            }
             console.log('[Postone] Form not loaded yet...');
             setTimeout(initPostone, 2000);
             return;
@@ -183,37 +189,51 @@
                 return;
             }
 
-            const data = JSON.parse(dataStr);
+            let data;
+            try { data = JSON.parse(dataStr); } catch (err) {
+                alert('❌ Stored data is corrupted. Copy the order again.');
+                return;
+            }
             console.log('[Postone] Data loaded:', data);
 
-            const hourAgo = Date.now() - (60 * 60 * 1000);
-            if (data.timestamp < hourAgo) {
-                if (!confirm('⚠️ Data is older than 1 hour. Use anyway?')) {
-                    return;
-                }
-            }
+            const mins = Math.round((Date.now() - data.timestamp) / 60000);
+            if (mins > 60 && !confirm(
+                `⚠️ Data for order #${data.orderNumber} was copied ${mins} minutes ago.\n\n` +
+                `Fill the form with it anyway?`)) return;
 
             fillPostoneForm(data);
         });
 
         // Observer
+        let wasVisible = false;
         const observer = new MutationObserver(function() {
             const isVisible = modal.style.display === 'block' ||
                             modal.classList.contains('show') ||
                             modal.classList.contains('in');
 
-            if (isVisible) {
-                const dataStr = GM_getValue('postoneOrderData', null);
-                if (dataStr) {
-                    const data = JSON.parse(dataStr);
-                    const hourAgo = Date.now() - (60 * 60 * 1000);
+            if (!isVisible) { wasVisible = false; return; }
+            if (wasVisible) return;          // the modal was already open — attribute noise
+            wasVisible = true;
 
-                    if (data.timestamp > hourAgo) {
-                        console.log('[Postone] Auto-filling...');
-                        setTimeout(() => fillPostoneForm(data), 1000);
-                    }
-                }
+            const dataStr = GM_getValue('postoneOrderData', null);
+            if (!dataStr) return;
+
+            let data;
+            try { data = JSON.parse(dataStr); } catch (e) { return; }
+
+            if (data.consumed) {
+                console.log('[Postone] Data already used for a shipment — not auto-filling again.');
+                showNotification('ℹ️ Copy the order again to auto-fill', 'info');
+                return;
             }
+            if (data.timestamp <= Date.now() - (60 * 60 * 1000)) return;
+
+            // Mark consumed BEFORE filling, so a reopened modal cannot reuse this address.
+            data.consumed = true;
+            GM_setValue('postoneOrderData', JSON.stringify(data));
+
+            console.log('[Postone] Auto-filling...');
+            setTimeout(() => fillPostoneForm(data), 1000);
         });
 
         observer.observe(modal, {

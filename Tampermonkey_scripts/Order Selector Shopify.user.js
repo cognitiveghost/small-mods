@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Order Selector Shopify
 // @namespace    http://tampermonkey.net/
-// @version      2.0
+// @version      2.1
 // @description  Select Shopify orders from a pasted list using ONE search query (no page-by-page crawling)
 // @match        https://admin.shopify.com/store/*/orders*
 // @grant        none
@@ -174,7 +174,13 @@
             document.querySelectorAll(ROW_SEL).forEach(row => {
                 const name = getOrderName(row); if (!name) return;
                 const fk = fullKey(name), dk = digitKey(name);
-                const t = targets.find(x => !x.matched && (x.full === fk || (x.digits && x.digits === dk)));
+                // Digits-only matching is a fallback for bare "7228" input. If the user
+                // typed a prefix ("BG7228") it must match in full, otherwise "#XY7228"
+                // on the same page gets ticked instead.
+                const t = targets.find(x => !x.matched && (
+                    x.full === fk ||
+                    (!/[A-Z]/.test(x.full) && x.digits && x.digits === dk)
+                ));
                 if (t) {
                     if (!row.classList.contains(SEL_CLASS)) {
                         const cb = row.querySelector('input[type="checkbox"]');

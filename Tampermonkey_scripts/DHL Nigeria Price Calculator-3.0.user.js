@@ -1,358 +1,163 @@
 // ==UserScript==
 // @name         DHL Nigeria Price Calculator
 // @namespace    http://tampermonkey.net/
-// @version      3.0
-// @description  Smart price distribution for Nigeria with iterative logic
+// @version      3.1
+// @description  Smart price distribution for Nigeria customs (<=200 EUR total, <=50 EUR per item)
 // @match        https://app2.dhlexpresscommerce.com/orders/*
 // @grant        none
 // ==/UserScript==
 
-(function() {
+(function () {
     'use strict';
 
-    function waitForGrid() {
-        // ПЕРЕВІРКА 1: URL повинен містити /orders/
-        if (!window.location.pathname.includes('/orders/')) {
-            return;
+    // Nigeria customs limits. Tune here if the rules change.
+    const LIMITS = { MAX_TOTAL: 200, MAX_PER_ITEM: 50, MIN_PRICE: 1 };
+
+    /* ══════════════════ PURE LOGIC (no DOM — see test_nigeria.mjs) ══════════════════
+     * items: [{ qty, price }]  ->  { mode, prices: number[], iterations, error }
+     * mode: 'cap'   every price capped at MAX_PER_ITEM was enough
+     *       'smart' cheap items kept, expensive ones share the leftover budget
+     *       'flat'  everything is cheap yet still over budget -> spread evenly
+     */
+    function computePrices(items, L) {
+        L = L || LIMITS;
+        const { MAX_TOTAL, MAX_PER_ITEM, MIN_PRICE } = L;
+        // Round DOWN: toFixed() rounds up and 3 x 66.67 = 200.01 would breach the limit.
+        const money = (n) => Math.floor(n * 100) / 100;
+
+        if (!items.length) return { error: 'No items.' };
+
+        // Single exit: nothing leaves here that would breach the customs limits.
+        const finish = (mode, prices, iterations) => {
+            const sum = prices.reduce((s, p, i) => s + p * work[i].qty, 0);
+            if (sum > MAX_TOTAL + 1e-9 || prices.some((p) => p <= 0 || p > MAX_PER_ITEM + 1e-9)) {
+                return { error: `Cannot fit these items under ${MAX_TOTAL} EUR total / ` +
+                                `${MAX_PER_ITEM} EUR per item. Remove items or reduce quantities.` };
+            }
+            return { mode, prices, iterations };
+        };
+
+        // Step 0: zero prices are rejected by customs — floor them, and never divide by qty 0.
+        const work = items.map((it) => ({
+            qty: Math.max(1, it.qty || 1),
+            price: it.price > 0 ? it.price : MIN_PRICE,
+        }));
+        const totalQty = work.reduce((s, it) => s + it.qty, 0);
+
+        // Step 1: does a plain cap at MAX_PER_ITEM already fit?
+        const capped = work.map((it) => Math.min(it.price, MAX_PER_ITEM));
+        if (capped.reduce((s, p, i) => s + p * work[i].qty, 0) <= MAX_TOTAL) {
+            return finish('cap', capped.map(money), 0);
         }
 
-        // ПЕРЕВІРКА 2: Таблиця артикулів повинна існувати
-        const grid = document.querySelector('.ssit-order-detail-grid.order-items');
-        if (grid) {
-            addButton();
-        } else {
-            setTimeout(waitForGrid, 500);
+        // Step 2: keep the cheap items untouched, squeeze the expensive ones into what is left.
+        // Each pass promotes the dearest "cheap" item into the expensive pool, so it terminates.
+        const expensive = work.map((it) => it.price > MAX_PER_ITEM);
+        for (let iteration = 1; iteration <= work.length + 1; iteration++) {
+            const cheapIdx = work.map((_, i) => i).filter((i) => !expensive[i]);
+
+            if (!cheapIdx.length) {
+                const per = money(MAX_TOTAL / totalQty);
+                return finish('flat', work.map(() => per), iteration);
+            }
+
+            const cheapTotal = cheapIdx.reduce((s, i) => s + work[i].price * work[i].qty, 0);
+            const expQty = work.reduce((s, it, i) => s + (expensive[i] ? it.qty : 0), 0);
+            const perUnit = (MAX_TOTAL - cheapTotal) / expQty;
+
+            const dearestCheap = cheapIdx.reduce((a, b) => (work[b].price > work[a].price ? b : a));
+            if (perUnit < work[dearestCheap].price) {
+                expensive[dearestCheap] = true;   // promote and retry
+                continue;
+            }
+
+            const per = money(perUnit);
+            return finish('smart', work.map((it, i) => (expensive[i] ? per : money(it.price))), iteration);
         }
+        return { error: 'Distribution did not converge.' };
     }
 
-    function addButton() {
-        // Перевіряємо чи кнопка вже існує
-        if (document.getElementById('nigeria-calc-button')) {
-            return;
-        }
+    /* ══════════════════ DOM ══════════════════ */
 
-        const button = document.createElement('button');
-        button.id = 'nigeria-calc-button';
-        button.textContent = '🇳🇬 Calculate Nigeria Prices';
-        button.style.cssText = `
-            position: fixed;
-            top: 15px;
-            left: 100px;
-            z-index: 9999;
-            padding: 12px 20px;
-            background: #008751;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: bold;
-            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        `;
+    const GRID = '.ssit-order-detail-grid.order-items';
 
-        button.addEventListener('mouseover', function() {
-            button.style.background = '#006d40';
+    function readRows() {
+        return [...document.querySelectorAll(GRID + ' tbody tr[data-index]')].map((row, index) => {
+            const val = (sel) => { const el = row.querySelector(sel); return el ? el.value.trim() : ''; };
+            // Some locales render prices as "12,50".
+            const price = parseFloat(val('td[data-col-index="3"] input.ssit-input-text').replace(',', '.'));
+            const qty = parseInt(val('td[data-col-index="2"] input.ssit-input-numeric'), 10);
+            return {
+                name: val('td[data-col-index="0"] input.k-input-inner'),
+                sku: val('td[data-col-index="1"] input.k-input-inner'),
+                qty: isNaN(qty) || qty < 1 ? 1 : qty,
+                price: isNaN(price) ? 0 : price,
+                input: row.querySelector('td[data-col-index="3"] input.ssit-input-text'),
+                index,
+            };
         });
+    }
 
-        button.addEventListener('mouseout', function() {
-            button.style.background = '#008751';
-        });
-
-        document.body.appendChild(button);
-        button.addEventListener('click', redistributePrices);
+    function writePrice(input, value) {
+        if (!input) return;
+        input.value = value.toFixed(2);
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
     }
 
     function redistributePrices() {
-        const MAX_TOTAL = 200; // Nigeria customs limit
-        const MAX_PER_ITEM = 50; // Max price per item
-        const MIN_PRICE = 1; // Minimum price for zero items
+        const items = readRows();
+        if (!items.length) { alert('❌ No items found!'); return; }
 
-        // Find all item rows
-        const rows = document.querySelectorAll('.ssit-order-detail-grid.order-items tbody tr[data-index]');
+        const before = items.reduce((s, it) => s + it.price * it.qty, 0);
+        const res = computePrices(items.map((it) => ({ qty: it.qty, price: it.price })), LIMITS);
 
-        if (rows.length === 0) {
-            alert('❌ No items found!');
-            return;
-        }
+        if (res.error) { alert('⚠️ ' + res.error); return; }
 
-        const items = [];
-        let totalOriginal = 0;
-
-        // Збираємо дані з кожного рядка
-        rows.forEach(function(row, index) {
-            const skuInput = row.querySelector('td[data-col-index="1"] input.k-input-inner');
-            const sku = skuInput ? skuInput.value.trim() : '';
-
-            const itemInput = row.querySelector('td[data-col-index="0"] input.k-input-inner');
-            const itemName = itemInput ? itemInput.value.trim() : '';
-
-            const priceInput = row.querySelector('td[data-col-index="3"] input.ssit-input-text');
-            const currentPrice = priceInput && priceInput.value ? parseFloat(priceInput.value) : 0;
-
-            const qtyInput = row.querySelector('td[data-col-index="2"] input.ssit-input-numeric');
-            const qty = qtyInput && qtyInput.value ? parseInt(qtyInput.value) : 1;
-
-            totalOriginal += currentPrice * qty;
-
-            items.push({
-                index: index,
-                sku: sku,
-                name: itemName,
-                qty: qty,
-                originalPrice: currentPrice,
-                priceInput: priceInput
-            });
-        });
-
-        console.log('Items found:', items.length);
-        console.log('Original total:', totalOriginal.toFixed(2), '€');
-
-        // КРОК 1: Фіксуємо нульові ціни
-        let zeroFixed = 0;
-        items.forEach(function(item) {
-            if (item.originalPrice === 0) {
-                item.originalPrice = MIN_PRICE;
-                zeroFixed++;
-            }
-        });
-
-        // Пересчитуємо загальну суму після фіксації нулів
-        let totalAfterZeroFix = 0;
-        items.forEach(function(item) {
-            totalAfterZeroFix += item.originalPrice * item.qty;
-        });
-
-        console.log('Total after zero fix:', totalAfterZeroFix.toFixed(2), '€');
-
-        // КРОК 2: Спробуємо просто обмежити артикули >50€ до 50€
-        let totalAfterCapping = 0;
-        items.forEach(function(item) {
-            const cappedPrice = item.originalPrice > MAX_PER_ITEM ? MAX_PER_ITEM : item.originalPrice;
-            totalAfterCapping += cappedPrice * item.qty;
-        });
-
-        console.log('Total after capping to 50€:', totalAfterCapping.toFixed(2), '€');
-
-        // Якщо після обмеження сума ≤ 200€ - просто застосовуємо це!
-        if (totalAfterCapping <= MAX_TOTAL) {
-            let newTotal = 0;
-            const changes = [];
-
-            items.forEach(function(item) {
-                let newPrice = item.originalPrice;
-
-                if (item.originalPrice > MAX_PER_ITEM) {
-                    newPrice = MAX_PER_ITEM;
-                }
-
-                if (item.priceInput) {
-                    item.priceInput.value = newPrice.toFixed(2);
-
-                    const event = new Event('change', { bubbles: true });
-                    item.priceInput.dispatchEvent(event);
-                    const event2 = new Event('input', { bubbles: true });
-                    item.priceInput.dispatchEvent(event2);
-                }
-
-                newTotal += newPrice * item.qty;
-
-                if (newPrice !== item.originalPrice) {
-                    changes.push({
-                        name: item.name || 'Item ' + (item.index + 1),
-                        sku: item.sku,
-                        qty: item.qty,
-                        oldPrice: item.originalPrice,
-                        newPrice: newPrice
-                    });
-                }
-            });
-
-            // Звіт для випадку ≤ 200€ після обмеження
-            let report = '✅ DONE! Simple cap to 50€ applied\n\n';
-            report += '📊 Summary:\n';
-            report += '━━━━━━━━━━━━━━━━\n';
-            report += 'Original: ' + totalOriginal.toFixed(2) + '€\n';
-            report += 'After zero fix: ' + totalAfterZeroFix.toFixed(2) + '€\n';
-            report += 'Final: ' + newTotal.toFixed(2) + '€\n';
-            report += 'Items capped at 50€: ' + changes.length + '\n';
-
-            if (zeroFixed > 0) {
-                report += 'Zero prices fixed: ' + zeroFixed + '\n';
-            }
-
-            if (changes.length > 0) {
-                report += '\n✏️ Changes:\n';
-                changes.forEach(function(ch) {
-                    report += '  • ' + (ch.name || ch.sku) + ' (x' + ch.qty + '):\n';
-                    report += '    ' + ch.oldPrice.toFixed(2) + '€ → ' + ch.newPrice.toFixed(2) + '€\n';
-                });
-            }
-
-            alert(report);
-            return;
-        }
-
-        // КРОК 3: Після обмеження все ще > 200€ - потрібен розумний розподіл
-        const THRESHOLD = MAX_PER_ITEM; // Поріг для "дешевих" артикулів
-
-        // Ітеративний алгоритм розподілу
-        let iteration = 0;
-        let maxIterations = items.length; // Захист від нескінченного циклу
-        let distributed = false;
-        let finalPricePerUnit = 0;
-
-        while (!distributed && iteration < maxIterations) {
-            iteration++;
-
-            // Ділимо артикули на дешеві та дорогі
-            const cheapItems = [];
-            const expensiveItems = [];
-
-            items.forEach(function(item) {
-                if (item.originalPrice <= THRESHOLD) {
-                    cheapItems.push(item);
-                } else {
-                    expensiveItems.push(item);
-                }
-            });
-
-            // Якщо немає дорогих - всі отримують однакову ціну
-            if (expensiveItems.length === 0) {
-                let totalQty = 0;
-                items.forEach(function(item) {
-                    totalQty += item.qty;
-                });
-                finalPricePerUnit = MAX_TOTAL / totalQty;
-                distributed = true;
-                break;
-            }
-
-            // Рахуємо суму дешевих
-            let cheapTotal = 0;
-            cheapItems.forEach(function(item) {
-                cheapTotal += item.originalPrice * item.qty;
-            });
-
-            // Доступний бюджет для розподілу
-            const availableBudget = MAX_TOTAL - cheapTotal;
-
-            // Рахуємо кількість одиниць дорогих артикулів
-            let expensiveQty = 0;
-            expensiveItems.forEach(function(item) {
-                expensiveQty += item.qty;
-            });
-
-            // Нова ціна для дорогих артикулів
-            const pricePerUnit = availableBudget / expensiveQty;
-
-            // Перевіряємо чи не перевищує максимум
-            if (pricePerUnit > MAX_PER_ITEM) {
-                alert('⚠️ ERROR: Cannot distribute!\n\n' +
-                      'Price per unit would be: ' + pricePerUnit.toFixed(2) + '€\n' +
-                      'Maximum allowed: ' + MAX_PER_ITEM + '€\n\n' +
-                      'Please remove items or reduce quantities.');
-                return;
-            }
-
-            // Знаходимо найдорожчий "дешевий" артикул
-            let maxCheapPrice = 0;
-            cheapItems.forEach(function(item) {
-                if (item.originalPrice > maxCheapPrice) {
-                    maxCheapPrice = item.originalPrice;
-                }
-            });
-
-            // Перевірка: чи нова ціна менша за найдорожчий дешевий?
-            if (pricePerUnit < maxCheapPrice) {
-                // Знаходимо найдорожчий дешевий артикул і переміщуємо його в дорогі
-                let mostExpensiveCheap = null;
-                items.forEach(function(item) {
-                    if (item.originalPrice === maxCheapPrice) {
-                        if (!mostExpensiveCheap) {
-                            mostExpensiveCheap = item;
-                        }
-                    }
-                });
-
-                if (mostExpensiveCheap) {
-                    // Переміщуємо його в категорію "дорогих"
-                    mostExpensiveCheap.originalPrice = THRESHOLD + 0.01; // Трохи більше порогу
-                    console.log('Iteration ' + iteration + ': Moving item to expensive category');
-                }
-            } else {
-                // Розподіл успішний!
-                finalPricePerUnit = pricePerUnit;
-                distributed = true;
-            }
-        }
-
-        if (!distributed) {
-            alert('⚠️ ERROR: Distribution algorithm failed after ' + maxIterations + ' iterations.\n\nPlease contact support.');
-            return;
-        }
-
-        // ЗАСТОСОВУЄМО НОВІ ЦІНИ
-        let newTotal = 0;
         const changes = [];
-
-        items.forEach(function(item) {
-            let newPrice;
-
-            if (item.originalPrice <= THRESHOLD) {
-                // Дешевий артикул - залишаємо як є
-                newPrice = item.originalPrice;
-            } else {
-                // Дорогий артикул - застосовуємо розподілену ціну
-                newPrice = finalPricePerUnit;
-            }
-
-            if (item.priceInput) {
-                item.priceInput.value = newPrice.toFixed(2);
-
-                const event = new Event('change', { bubbles: true });
-                item.priceInput.dispatchEvent(event);
-                const event2 = new Event('input', { bubbles: true });
-                item.priceInput.dispatchEvent(event2);
-            }
-
-            newTotal += newPrice * item.qty;
-
-            // Зберігаємо оригінальну ціну для звіту (до фіксації нулів)
-            const originalForReport = items[item.index].originalPrice === MIN_PRICE && totalOriginal < totalAfterZeroFix
-                ? 0
-                : item.originalPrice;
-
-            if (Math.abs(newPrice - originalForReport) > 0.01) {
-                changes.push({
-                    name: item.name || 'Item ' + (item.index + 1),
-                    sku: item.sku,
-                    qty: item.qty,
-                    oldPrice: originalForReport,
-                    newPrice: newPrice
-                });
+        let after = 0;
+        items.forEach((it, i) => {
+            const p = res.prices[i];
+            writePrice(it.input, p);
+            after += p * it.qty;
+            if (Math.abs(p - it.price) > 0.005) {
+                changes.push(`  • ${it.name || it.sku || 'Item ' + (i + 1)} (x${it.qty}): ` +
+                             `${it.price.toFixed(2)}€ → ${p.toFixed(2)}€`);
             }
         });
 
-        // ГЕНЕРУЄМО ЗВІТ
-        let report = '✅ DONE! Smart distribution applied\n\n';
-        report += '📊 Summary:\n';
-        report += '━━━━━━━━━━━━━━━━\n';
-        report += 'Original: ' + totalOriginal.toFixed(2) + '€\n';
-        report += 'Final: ' + newTotal.toFixed(2) + '€\n';
-        report += 'Items changed: ' + changes.length + '/' + items.length + '\n';
-        report += 'Iterations: ' + iteration + '\n';
-
-        if (zeroFixed > 0) {
-            report += 'Zero prices fixed: ' + zeroFixed + '\n';
-        }
-
-        report += '\n✏️ Changes:\n';
-        changes.forEach(function(ch) {
-            report += '  • ' + (ch.name || ch.sku) + ' (x' + ch.qty + '):\n';
-            report += '    ' + ch.oldPrice.toFixed(2) + '€ → ' + ch.newPrice.toFixed(2) + '€\n';
-        });
-
-        alert(report);
+        const MODE = { cap: 'capped at 50€', smart: 'smart distribution', flat: 'spread evenly' };
+        alert(
+            `✅ DONE — ${MODE[res.mode]}\n\n` +
+            `📊 Summary\n━━━━━━━━━━━━━━━━\n` +
+            `Original: ${before.toFixed(2)}€\n` +
+            `Final:    ${after.toFixed(2)}€  (limit ${LIMITS.MAX_TOTAL}€)\n` +
+            `Items changed: ${changes.length}/${items.length}\n` +
+            (changes.length ? `\n✏️ Changes:\n${changes.join('\n')}` : '')
+        );
     }
 
-    waitForGrid();
+    function addButton() {
+        if (document.getElementById('nigeria-calc-button')) return;
+        const button = document.createElement('button');
+        button.id = 'nigeria-calc-button';
+        button.textContent = '🇳🇬 Calculate Nigeria Prices';
+        button.style.cssText = `position:fixed;top:15px;left:100px;z-index:9999;padding:12px 20px;
+            background:#008751;color:#fff;border:none;border-radius:6px;cursor:pointer;
+            font-weight:bold;box-shadow:0 2px 8px rgba(0,0,0,.2)`;
+        button.addEventListener('mouseover', () => button.style.background = '#006d40');
+        button.addEventListener('mouseout', () => button.style.background = '#008751');
+        button.addEventListener('click', redistributePrices);
+        document.body.appendChild(button);
+    }
+
+    // Node (test harness) has no DOM — expose the pure part and stop here.
+    if (typeof document === 'undefined') { module.exports = { computePrices, LIMITS }; return; }
+
+    // The grid is rendered client-side; watch instead of polling forever.
+    if (location.pathname.includes('/orders/')) {
+        if (document.querySelector(GRID)) addButton();
+        new MutationObserver(() => { if (document.querySelector(GRID)) addButton(); })
+            .observe(document.body, { childList: true, subtree: true });
+    }
 })();
