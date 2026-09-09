@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      2.8
+// @version      2.9
 // @description  WooCommerce to Postone - Fixed values + Dynamic weight + Select2 fix
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
@@ -16,7 +16,7 @@
 (function() {
     'use strict';
 
-    console.log('[Postone Script v2.8] Loaded on:', window.location.href);
+    console.log('[Postone Script v2.9] Loaded on:', window.location.href);
 
     // CONFIGURATION
     const CONFIG = {
@@ -449,14 +449,21 @@
     }
 
     // HPOS renders no "Order #" <h2>; the number lives in .woocommerce-order-data__heading.
-    // URL id stays the last resort (it is the post id, which can differ from the
-    // displayed order number when a sequential-numbers plugin is active).
+    //
+    // The number is NOT always digits. With a sequential-order-number plugin the store
+    // displays "Order #UK10861" while the post id is 14157 — independent sequences. The
+    // old /Order #(\d+)/ matched none of that and silently fell through to the URL id,
+    // so Postone received reference #14157 and the shipment export could no longer be
+    // reconciled against WooCommerce. Accept letters, and keep the post id as a genuine
+    // last resort only.
     function extractOrderNumber() {
         const heading = document.querySelector('.woocommerce-order-data__heading') ||
                         [...document.querySelectorAll('h1, h2, h3')]
-                            .find((h) => h.textContent.includes('Order #'));
-        const match = heading && heading.textContent.match(/Order #(\d+)/);
+                            .find((h) => /Order\s*#/.test(h.textContent));
+        const match = heading && heading.textContent.match(/Order\s*#\s*([A-Za-z0-9][A-Za-z0-9\-_\/]*)/);
         if (match) return match[1];
+        console.warn('[Postone] Could not read the order number from the page; ' +
+                     'falling back to the post id, which may differ from the displayed number.');
         const urlMatch = window.location.href.match(/(?:post|id)=(\d+)/);
         return urlMatch ? urlMatch[1] : '';
     }

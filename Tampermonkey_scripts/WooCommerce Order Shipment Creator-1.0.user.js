@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -55,16 +55,84 @@
         document.body.appendChild(button);
     }
 
+    // ─── MATCHING (pure — see test_shipments.js) ─────────────────────────────
+    // Order numbers are not always digits. A sequential-order-number plugin displays
+    // #UK10861 while the post id stays 14157 (independent sequences), and the shipment
+    // export drops the prefix again to 10861. The old /^#?(\d+)/ matched none of those,
+    // so on such a store EVERY order came back "not found".
+    const normKey = function (s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); };
+    const digitKey = function (s) { const m = String(s || '').match(/\d+/g); return m ? m.join('') : ''; };
+
+    // A row reads "#UK10861 Tatiana Silva" — number and customer name separated by a
+    // SINGLE space, so splitting on whitespace runs the name into the key. Take the
+    // leading token instead.
+    function parseOrderNumber(text) {
+        const m = String(text || '').trim().match(/^#?\s*([A-Za-z0-9][A-Za-z0-9\-_\/]*)/);
+        return m ? m[1] : '';
+    }
+
+    /**
+     * @param {Array}  rows       [{label:'#UK10861', id:'14157', url:'…'}]
+     * @param {Array}  requested  raw pasted lines
+     * @returns {{found:Array, notFound:Array, ambiguous:Array}}
+     */
+    function matchOrders(rows, requested) {
+        const byKey = {};      // "UK10861" -> row
+        const byDigits = {};   // "10861"   -> [row, …]   (prefixes can collide)
+
+        rows.forEach(function (row) {
+            const k = normKey(row.label);
+            if (!k) return;
+            byKey[k] = row;
+            const d = digitKey(row.label);
+            if (d) (byDigits[d] = byDigits[d] || []).push(row);
+        });
+
+        const found = [], notFound = [], ambiguous = [], taken = {};
+
+        requested.forEach(function (raw) {
+            const k = normKey(raw);
+            if (!k) return;
+            let row = byKey[k];
+            if (!row && !/[A-Z]/.test(k)) {
+                // A bare "10861" pasted from the shipment export. Fall back to the digit
+                // index, but refuse to guess when two prefixes share the same digits.
+                const hits = byDigits[k] || [];
+                if (hits.length > 1) {
+                    ambiguous.push(raw + ' → ' + hits.map(function (h) { return '#' + h.label; }).join(', '));
+                    return;
+                }
+                row = hits[0];
+            }
+            if (!row) { notFound.push(raw); return; }
+            if (taken[row.id]) return;              // same order pasted twice
+            taken[row.id] = true;
+            found.push(row);
+        });
+
+        return { found: found, notFound: notFound, ambiguous: ambiguous };
+    }
+
+    function readRows() {
+        return [].slice.call(document.querySelectorAll('a.order-view')).map(function (link) {
+            const strong = link.querySelector('strong');
+            const label = parseOrderNumber((strong || link).textContent);
+            // The queue is matched against the ?post=/?id= URL param on the order page,
+            // so a row is only usable if we can read that id off its link.
+            const idMatch = (link.getAttribute('href') || '').match(/[?&](?:post|id)=(\d+)/);
+            return (label && idMatch) ? { label: label, id: idMatch[1], url: link.href } : null;
+        }).filter(Boolean);
+    }
+
     function onProcessClick() {
         const input = prompt(
-            'Enter order numbers to process (one per line):\n\nExample:\n#36576\n#36574\n#36573'
+            'Enter order numbers to process (one per line):\n\n' +
+            'Accepts #UK10861, UK10861 or 10861.\n\nExample:\n#UK10861\n#UK10860'
         );
         if (!input) return;
 
-        // Parse order numbers — strip #, whitespace, empty lines
-        const requested = input
-            .split('\n')
-            .map(function (n) { return n.trim().replace(/^#/, ''); })
+        const requested = input.split('\n')
+            .map(function (n) { return n.trim(); })
             .filter(Boolean);
 
         if (requested.length === 0) {
@@ -72,37 +140,28 @@
             return;
         }
 
-        // Build map of displayed orderNumber → {editURL, post/order id}.
-        // The queue must hold the ID, because the order page identifies itself by the
-        // ?post=/?id= URL param. Those match on a plain install but diverge as soon as a
-        // sequential-order-number plugin renames #43075 to #BG-1042.
-        const orderMap = {};
-        document.querySelectorAll('a.order-view').forEach(function (link) {
-            const strong = link.querySelector('strong');
-            if (!strong) return;
-            const match = strong.textContent.match(/^#?(\d+)/);
-            if (!match) return;
-            const idMatch = link.href.match(/[?&](?:post|id)=(\d+)/);
-            orderMap[match[1]] = { url: link.href, id: idMatch ? idMatch[1] : match[1] };
-        });
+        const rows = readRows();
+        const res = matchOrders(rows, requested);
+        const found = res.found, notFound = res.notFound, ambiguous = res.ambiguous;
 
-        const found = [];
-        const notFound = [];
-
-        requested.forEach(function (num) {
-            if (orderMap[num]) {
-                found.push({ num: num, url: orderMap[num].url, id: orderMap[num].id });
-            } else {
-                notFound.push(num);
+        const problems = function () {
+            let out = '';
+            if (notFound.length) {
+                out += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n' +
+                       notFound.join('\n');
             }
-        });
+            if (ambiguous.length) {
+                out += '\n\n\u26a0\ufe0f Ambiguous — more than one order has these digits, ' +
+                       'paste the full number with its prefix:\n' + ambiguous.join('\n');
+            }
+            return out;
+        };
 
         if (found.length === 0) {
-            let msg = 'None of the entered orders were found on this page.';
-            if (notFound.length > 0) {
-                msg += '\n\nNot found:\n' + notFound.map(function (n) { return '#' + n; }).join('\n');
-            }
-            alert(msg);
+            alert('None of the entered orders were found on this page.' + problems() +
+                  (rows.length ? '\n\nThis page shows ' + rows.length + ' orders, e.g. ' +
+                                 rows.slice(0, 3).map(function (r) { return '#' + r.label; }).join(', ')
+                               : '\n\nNo order rows were readable on this page at all.'));
             return;
         }
 
@@ -126,12 +185,11 @@
         } else {
             msg = 'Opening ' + opened + ' order(s) for shipment creation.';
         }
-        if (notFound.length > 0) {
-            msg += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n' +
-                   notFound.map(function (n) { return '#' + n; }).join('\n') +
-                   '\n\nMake sure these orders are visible on the current page/filter.';
+        msg += problems();
+        if (notFound.length || ambiguous.length) {
+            msg += '\n\nMake sure these orders are visible on the current page/filter.';
         }
-        toast(msg, opened === found.length && notFound.length === 0);
+        toast(msg, opened === found.length && !notFound.length && !ambiguous.length);
     }
 
     // ─── SINGLE ORDER PAGE ───────────────────────────────────────────────────
@@ -232,6 +290,9 @@
             }
         }, interval);
     }
+
+    // Node (test harness) has no DOM — expose the pure part and stop here.
+    if (typeof document === 'undefined') { module.exports = { matchOrders, parseOrderNumber }; return; }
 
     // ─── ENTRY POINT ─────────────────────────────────────────────────────────
     if (isOrdersListPage()) {
