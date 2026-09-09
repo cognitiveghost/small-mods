@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      2.9
+// @version      3.0
 // @description  WooCommerce to Postone - Fixed values + Dynamic weight + Select2 fix
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
@@ -16,7 +16,7 @@
 (function() {
     'use strict';
 
-    console.log('[Postone Script v2.9] Loaded on:', window.location.href);
+    console.log('[Postone Script v3.0] Loaded on:', window.location.href);
 
     // CONFIGURATION
     const CONFIG = {
@@ -113,7 +113,7 @@
                 postcode: getValue('_shipping_postcode'),
                 country: countryCode,
                 state: getValue('_shipping_state'),
-                orderNumber: extractOrderNumber(),
+                orderNumber: extractPostId(),
                 // Product quantity for weight calculation
                 productQuantity: productQuantity || 1,
                 timestamp: Date.now(),
@@ -448,24 +448,23 @@
         return el ? String(el.value || '').trim() : '';
     }
 
-    // HPOS renders no "Order #" <h2>; the number lives in .woocommerce-order-data__heading.
-    //
-    // The number is NOT always digits. With a sequential-order-number plugin the store
-    // displays "Order #UK10861" while the post id is 14157 — independent sequences. The
-    // old /Order #(\d+)/ matched none of that and silently fell through to the URL id,
-    // so Postone received reference #14157 and the shipment export could no longer be
-    // reconciled against WooCommerce. Accept letters, and keep the post id as a genuine
-    // last resort only.
-    function extractOrderNumber() {
-        const heading = document.querySelector('.woocommerce-order-data__heading') ||
-                        [...document.querySelectorAll('h1, h2, h3')]
-                            .find((h) => /Order\s*#/.test(h.textContent));
-        const match = heading && heading.textContent.match(/Order\s*#\s*([A-Za-z0-9][A-Za-z0-9\-_\/]*)/);
+    // DELIBERATE: this returns the POST ID (14157), not the displayed order number
+    // (#UK10861). Do not "fix" it to the visible number — the whole fulfilment loop is
+    // keyed on the post id:
+    //     Postone reference  ->  shipment export column  ->  pasted back into the
+    //     Shipment Creator, which opens orders by ?post=/?id=.
+    // Switching to the displayed number would break reconciliation against every
+    // shipment already exported. The displayed number is only the Shipment Creator's
+    // problem, and it is handled there (see parseOrderNumber in that script).
+    function extractPostId() {
+        const urlMatch = window.location.href.match(/[?&](?:post|id)=(\d+)/);
+        if (urlMatch) return urlMatch[1];
+        // Not an edit URL we recognise — last resort, take digits from the heading.
+        const heading = document.querySelector('.woocommerce-order-data__heading');
+        const match = heading && heading.textContent.match(/(\d+)/);
         if (match) return match[1];
-        console.warn('[Postone] Could not read the order number from the page; ' +
-                     'falling back to the post id, which may differ from the displayed number.');
-        const urlMatch = window.location.href.match(/(?:post|id)=(\d+)/);
-        return urlMatch ? urlMatch[1] : '';
+        console.warn('[Postone] Could not determine the post id for this order.');
+        return '';
     }
 
     function showNotification(message, type = 'info') {

@@ -30,8 +30,13 @@ assert.deepStrictEqual(rows.map((r) => r.label), ['UK10861', 'UK10860', 'UK10859
  */
 assert.deepStrictEqual(ids(matchOrders(rows, ['#UK10861'])), ['14157'], 'prefixed number must match');
 
-// The three ways an operator actually pastes the same order.
-for (const form of ['#UK10861', 'UK10861', 'uk10861', ' #UK-10861 ', '10861']) {
+// THE PRIMARY WORKFLOW: the shipment export column holds POST IDS, and that column
+// is what gets pasted in. Matching only the displayed number missed it entirely.
+assert.deepStrictEqual(ids(matchOrders(rows, ['14157', '14156'])), ['14157', '14156'],
+    'post ids pasted from the export must match');
+
+// Every form an operator can paste for the same order.
+for (const form of ['#UK10861', 'UK10861', 'uk10861', ' #UK-10861 ', '10861', '14157']) {
     assert.deepStrictEqual(ids(matchOrders(rows, [form])), ['14157'], `form ${JSON.stringify(form)} must match`);
 }
 
@@ -39,25 +44,33 @@ for (const form of ['#UK10861', 'UK10861', 'uk10861', ' #UK-10861 ', '10861']) {
 // identifies itself by ?post=/?id=, so queuing 10861 would never fire.
 assert.deepStrictEqual(ids(matchOrders(rows, ['#UK10861', '#UK10859'])), ['14157', '14154']);
 
-// Digits-only input is a fallback, so it must not silently pick one of two prefixes.
+/* ── Duplicates: the script used to open the same order in two tabs ─────────── */
+let r = matchOrders(rows, ['#UK10861', '14157', '10861', 'UK10861']);
+assert.deepStrictEqual(ids(r), ['14157'], 'four references to one order open ONE tab');
+assert.strictEqual(r.duplicates.length, 3, 'and the three skipped lines are reported');
+
+r = matchOrders(rows, ['#UK10861', '#UK10861']);
+assert.deepStrictEqual(ids(r), ['14157']);
+assert.deepStrictEqual(r.duplicates, ['#UK10861']);
+
+// A bare number that is one order's post id AND another's order number must not be
+// guessed — that would create a shipment for the wrong customer.
 const collide = [
-    { label: parseOrderNumber('#UK10861 Tatiana Silva'), id: '14157', url: 'u1' },
-    { label: parseOrderNumber('#IE10861 Sean Murphy'),   id: '99001', url: 'u2' },
+    { label: 'UK10861', id: '14157', url: 'u1' },
+    { label: 'UK99999', id: '10861', url: 'u2' },   // its post id == the other's digits
 ];
-let r = matchOrders(collide, ['10861']);
-assert.deepStrictEqual(r.found, [], 'ambiguous digits must not be guessed');
+r = matchOrders(collide, ['10861']);
+assert.deepStrictEqual(r.found, [], 'ambiguous reference must not be guessed');
 assert.strictEqual(r.ambiguous.length, 1);
-assert.ok(r.ambiguous[0].includes('UK10861') && r.ambiguous[0].includes('IE10861'));
-// ...but the full number stays unambiguous.
-assert.deepStrictEqual(ids(matchOrders(collide, ['#IE10861'])), ['99001']);
+// ...but an unambiguous reference to either still works.
+assert.deepStrictEqual(ids(matchOrders(collide, ['UK10861'])), ['14157']);
+assert.deepStrictEqual(ids(matchOrders(collide, ['14157'])), ['14157']);
+assert.deepStrictEqual(ids(matchOrders(collide, ['UK99999'])), ['10861']);
 
 // Unknown numbers are reported, not dropped.
 r = matchOrders(rows, ['#UK10861', '#UK99999']);
 assert.deepStrictEqual(ids(r), ['14157']);
 assert.deepStrictEqual(r.notFound, ['#UK99999']);
-
-// The same order pasted twice opens one tab, not two.
-assert.deepStrictEqual(ids(matchOrders(rows, ['#UK10861', '10861', 'UK10861'])), ['14157']);
 
 // Plain numeric stores (lidagreen.com) keep working.
 const plain = [{ label: parseOrderNumber('#43075 Ivana Sorace'), id: '43075', url: 'u' }];
@@ -68,4 +81,4 @@ assert.deepStrictEqual(ids(matchOrders(plain, ['43075'])), ['43075']);
 assert.deepStrictEqual(matchOrders(rows, ['', '   ', '###']).found, []);
 assert.deepStrictEqual(matchOrders([], ['#UK10861']).notFound, ['#UK10861']);
 
-console.log('order matching: 22/22 ok');
+console.log('order matching: 30/30 ok');

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -56,10 +56,15 @@
     }
 
     // ─── MATCHING (pure — see test_shipments.js) ─────────────────────────────
-    // Order numbers are not always digits. A sequential-order-number plugin displays
-    // #UK10861 while the post id stays 14157 (independent sequences), and the shipment
-    // export drops the prefix again to 10861. The old /^#?(\d+)/ matched none of those,
-    // so on such a store EVERY order came back "not found".
+    // An order can be referred to by three different strings, and the operator pastes
+    // whichever their source produced:
+    //   post id        14157      <- the shipment EXPORT column, and the only id the
+    //                               order page itself answers to (?post=/?id=)
+    //   order number   UK10861    <- what the orders grid displays
+    //   bare digits    10861      <- that number with its prefix stripped
+    // These are independent sequences: #UK10861 lives at ?id=14157. The old
+    // /^#?(\d+)/ recognised none of them on a prefixed store, so every order came
+    // back "not found".
     const normKey = function (s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); };
     const digitKey = function (s) { const m = String(s || '').match(/\d+/g); return m ? m.join('') : ''; };
 
@@ -72,45 +77,50 @@
     }
 
     /**
-     * @param {Array}  rows       [{label:'#UK10861', id:'14157', url:'…'}]
+     * @param {Array}  rows       [{label:'UK10861', id:'14157', url:'…'}]
      * @param {Array}  requested  raw pasted lines
-     * @returns {{found:Array, notFound:Array, ambiguous:Array}}
+     * @returns {{found:Array, notFound:Array, ambiguous:Array, duplicates:Array}}
      */
     function matchOrders(rows, requested) {
-        const byKey = {};      // "UK10861" -> row
-        const byDigits = {};   // "10861"   -> [row, …]   (prefixes can collide)
+        const index = {};   // key -> [row, …]
+        const add = function (key, row) {
+            if (!key) return;
+            const list = index[key] = index[key] || [];
+            if (list.indexOf(row) === -1) list.push(row);
+        };
 
         rows.forEach(function (row) {
-            const k = normKey(row.label);
-            if (!k) return;
-            byKey[k] = row;
-            const d = digitKey(row.label);
-            if (d) (byDigits[d] = byDigits[d] || []).push(row);
+            add(normKey(row.label), row);    // UK10861
+            add(normKey(row.id), row);       // 14157   (export column)
+            add(digitKey(row.label), row);   // 10861
         });
 
-        const found = [], notFound = [], ambiguous = [], taken = {};
+        const found = [], notFound = [], ambiguous = [], duplicates = [], taken = {};
 
         requested.forEach(function (raw) {
             const k = normKey(raw);
             if (!k) return;
-            let row = byKey[k];
-            if (!row && !/[A-Z]/.test(k)) {
-                // A bare "10861" pasted from the shipment export. Fall back to the digit
-                // index, but refuse to guess when two prefixes share the same digits.
-                const hits = byDigits[k] || [];
-                if (hits.length > 1) {
-                    ambiguous.push(raw + ' → ' + hits.map(function (h) { return '#' + h.label; }).join(', '));
-                    return;
-                }
-                row = hits[0];
+
+            const hits = index[k] || [];
+            if (!hits.length) { notFound.push(raw); return; }
+            if (hits.length > 1) {
+                // e.g. a bare "10861" that is one order's post id and another's order
+                // number. Refuse to guess rather than ship the wrong parcel.
+                ambiguous.push(raw + ' → #' + hits.map(function (h) {
+                    return h.label + ' (id ' + h.id + ')';
+                }).join(', #'));
+                return;
             }
-            if (!row) { notFound.push(raw); return; }
-            if (taken[row.id]) return;              // same order pasted twice
+
+            const row = hits[0];
+            // The same order reached us twice — as UK10861 and 14157, or just pasted
+            // twice. Without this the script opened a second tab for the same order.
+            if (taken[row.id]) { duplicates.push(raw); return; }
             taken[row.id] = true;
             found.push(row);
         });
 
-        return { found: found, notFound: notFound, ambiguous: ambiguous };
+        return { found: found, notFound: notFound, ambiguous: ambiguous, duplicates: duplicates };
     }
 
     function readRows() {
@@ -142,7 +152,8 @@
 
         const rows = readRows();
         const res = matchOrders(rows, requested);
-        const found = res.found, notFound = res.notFound, ambiguous = res.ambiguous;
+        const found = res.found, notFound = res.notFound,
+              ambiguous = res.ambiguous, duplicates = res.duplicates;
 
         const problems = function () {
             let out = '';
@@ -151,8 +162,12 @@
                        notFound.join('\n');
             }
             if (ambiguous.length) {
-                out += '\n\n\u26a0\ufe0f Ambiguous — more than one order has these digits, ' +
-                       'paste the full number with its prefix:\n' + ambiguous.join('\n');
+                out += '\n\n\u26a0\ufe0f Ambiguous — these match more than one order, ' +
+                       'paste the post id instead:\n' + ambiguous.join('\n');
+            }
+            if (duplicates.length) {
+                out += '\n\n\u2139\ufe0f Skipped ' + duplicates.length + ' duplicate line(s) — ' +
+                       'the same order was listed more than once:\n' + duplicates.join('\n');
             }
             return out;
         };
@@ -186,7 +201,7 @@
             msg = 'Opening ' + opened + ' order(s) for shipment creation.';
         }
         msg += problems();
-        if (notFound.length || ambiguous.length) {
+        if (notFound.length) {
             msg += '\n\nMake sure these orders are visible on the current page/filter.';
         }
         toast(msg, opened === found.length && !notFound.length && !ambiguous.length);
