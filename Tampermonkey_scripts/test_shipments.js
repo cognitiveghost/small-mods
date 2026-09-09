@@ -15,6 +15,8 @@ const RAW = [
 const rows = RAW.map(([text, id]) => ({ label: parseOrderNumber(text), id, url: 'u' + id }));
 const ids = (r) => r.found.map((f) => f.id);
 
+let r;
+
 // Parsing must isolate the number and drop the name.
 assert.strictEqual(parseOrderNumber('#UK10861 Tatiana Silva'), 'UK10861');
 assert.strictEqual(parseOrderNumber('#43075 Ivana Sorace'), '43075');
@@ -35,35 +37,40 @@ assert.deepStrictEqual(ids(matchOrders(rows, ['#UK10861'])), ['14157'], 'prefixe
 assert.deepStrictEqual(ids(matchOrders(rows, ['14157', '14156'])), ['14157', '14156'],
     'post ids pasted from the export must match');
 
-// Every form an operator can paste for the same order.
-for (const form of ['#UK10861', 'UK10861', 'uk10861', ' #UK-10861 ', '10861', '14157']) {
+// Every form an operator can paste for the same order: grid number or post id.
+for (const form of ['#UK10861', 'UK10861', 'uk10861', ' #UK-10861 ', '14157', ' 14157 ']) {
     assert.deepStrictEqual(ids(matchOrders(rows, [form])), ['14157'], `form ${JSON.stringify(form)} must match`);
 }
+
+// A prefix-stripped number is deliberately NOT accepted: it is indistinguishable from
+// a post id, so honouring it risks resolving to a different order entirely.
+r = matchOrders(rows, ['10861']);
+assert.deepStrictEqual(r.found, [], 'stripped prefix must not match');
+assert.deepStrictEqual(r.notFound, ['10861'], 'and it must be reported, not dropped');
 
 // The queue must carry the POST ID, never the displayed number — the order page
 // identifies itself by ?post=/?id=, so queuing 10861 would never fire.
 assert.deepStrictEqual(ids(matchOrders(rows, ['#UK10861', '#UK10859'])), ['14157', '14154']);
 
 /* ── Duplicates: the script used to open the same order in two tabs ─────────── */
-let r = matchOrders(rows, ['#UK10861', '14157', '10861', 'UK10861']);
-assert.deepStrictEqual(ids(r), ['14157'], 'four references to one order open ONE tab');
-assert.strictEqual(r.duplicates.length, 3, 'and the three skipped lines are reported');
+r = matchOrders(rows, ['#UK10861', '14157', 'UK10861']);
+assert.deepStrictEqual(ids(r), ['14157'], 'three references to one order open ONE tab');
+assert.strictEqual(r.duplicates.length, 2, 'and the two skipped lines are reported');
 
 r = matchOrders(rows, ['#UK10861', '#UK10861']);
 assert.deepStrictEqual(ids(r), ['14157']);
 assert.deepStrictEqual(r.duplicates, ['#UK10861']);
 
-// A bare number that is one order's post id AND another's order number must not be
-// guessed — that would create a shipment for the wrong customer.
+// On a plain-numeric store one order's NUMBER can be another's POST ID. Still refuse
+// to guess there — that would create a shipment for the wrong customer.
 const collide = [
-    { label: 'UK10861', id: '14157', url: 'u1' },
-    { label: 'UK99999', id: '10861', url: 'u2' },   // its post id == the other's digits
+    { label: '10861',   id: '14157', url: 'u1' },
+    { label: 'UK99999', id: '10861', url: 'u2' },   // its post id == the other's number
 ];
 r = matchOrders(collide, ['10861']);
 assert.deepStrictEqual(r.found, [], 'ambiguous reference must not be guessed');
 assert.strictEqual(r.ambiguous.length, 1);
 // ...but an unambiguous reference to either still works.
-assert.deepStrictEqual(ids(matchOrders(collide, ['UK10861'])), ['14157']);
 assert.deepStrictEqual(ids(matchOrders(collide, ['14157'])), ['14157']);
 assert.deepStrictEqual(ids(matchOrders(collide, ['UK99999'])), ['10861']);
 

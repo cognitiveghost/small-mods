@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Opens orders from a list and auto-clicks Create Shipment on each order page
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
@@ -56,17 +56,19 @@
     }
 
     // ─── MATCHING (pure — see test_shipments.js) ─────────────────────────────
-    // An order can be referred to by three different strings, and the operator pastes
-    // whichever their source produced:
-    //   post id        14157      <- the shipment EXPORT column, and the only id the
-    //                               order page itself answers to (?post=/?id=)
-    //   order number   UK10861    <- what the orders grid displays
-    //   bare digits    10861      <- that number with its prefix stripped
+    // Exactly TWO ways to refer to an order, both exact:
+    //   post id        14157     <- the shipment EXPORT column, and the only id the
+    //                              order page itself answers to (?post=/?id=)
+    //   order number   UK10861   <- what the orders grid displays
     // These are independent sequences: #UK10861 lives at ?id=14157. The old
-    // /^#?(\d+)/ recognised none of them on a prefixed store, so every order came
-    // back "not found".
+    // /^#?(\d+)/ recognised neither on a prefixed store, so every order came back
+    // "not found".
+    //
+    // A prefix-stripped "10861" is deliberately NOT accepted. It cannot be told apart
+    // from a post id, so on a plain-numeric store it could resolve to a different
+    // order — i.e. a shipment for the wrong customer. Paste the grid number or the
+    // post id; both are unambiguous.
     const normKey = function (s) { return String(s || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); };
-    const digitKey = function (s) { const m = String(s || '').match(/\d+/g); return m ? m.join('') : ''; };
 
     // A row reads "#UK10861 Tatiana Silva" — number and customer name separated by a
     // SINGLE space, so splitting on whitespace runs the name into the key. Take the
@@ -90,9 +92,8 @@
         };
 
         rows.forEach(function (row) {
-            add(normKey(row.label), row);    // UK10861
-            add(normKey(row.id), row);       // 14157   (export column)
-            add(digitKey(row.label), row);   // 10861
+            add(normKey(row.label), row);    // UK10861  (orders grid)
+            add(normKey(row.id), row);       // 14157    (export column)
         });
 
         const found = [], notFound = [], ambiguous = [], duplicates = [], taken = {};
@@ -104,8 +105,8 @@
             const hits = index[k] || [];
             if (!hits.length) { notFound.push(raw); return; }
             if (hits.length > 1) {
-                // e.g. a bare "10861" that is one order's post id and another's order
-                // number. Refuse to guess rather than ship the wrong parcel.
+                // Only reachable on a plain-numeric store where one order's number is
+                // another's post id. Refuse to guess rather than ship the wrong parcel.
                 ambiguous.push(raw + ' → #' + hits.map(function (h) {
                     return h.label + ' (id ' + h.id + ')';
                 }).join(', #'));
@@ -137,7 +138,8 @@
     function onProcessClick() {
         const input = prompt(
             'Enter order numbers to process (one per line):\n\n' +
-            'Accepts #UK10861, UK10861 or 10861.\n\nExample:\n#UK10861\n#UK10860'
+            'Accepts the order number (#UK10861) or the post id (14157),\n' +
+            'the column the shipment export gives you.\n\nExample:\n#UK10861\n#UK10860'
         );
         if (!input) return;
 
@@ -159,7 +161,9 @@
             let out = '';
             if (notFound.length) {
                 out += '\n\n\u26a0\ufe0f Not found on this page (' + notFound.length + '):\n' +
-                       notFound.join('\n');
+                       notFound.join('\n') +
+                       '\n\nNote: a number with its prefix stripped (10861 instead of ' +
+                       'UK10861) is not accepted — use the grid number or the post id.';
             }
             if (ambiguous.length) {
                 out += '\n\n\u26a0\ufe0f Ambiguous — these match more than one order, ' +
