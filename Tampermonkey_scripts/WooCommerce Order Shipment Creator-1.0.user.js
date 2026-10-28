@@ -1,12 +1,20 @@
 // ==UserScript==
 // @name         WooCommerce Order Shipment Creator
 // @namespace    http://tampermonkey.net/
-// @version      1.6
-// @description  Opens orders from a list and auto-clicks Create Shipment on each order page
+// @version      1.7
+// @description  Opens orders from a list and auto-clicks Create Shipment on each order page; cleans ' / \ and fills the non-EU unit value first
 // @match        https://lidagreen.com/wp-admin/edit.php*
 // @match        https://lidagreen.com/wp-admin/post.php*
 // @match        https://lidagreen.com/wp-admin/admin.php*
+// @match        https://lidagreen.co.uk/wp-admin/edit.php*
+// @match        https://lidagreen.co.uk/wp-admin/post.php*
+// @match        https://lidagreen.co.uk/wp-admin/admin.php*
+// @match        https://lidagreen.fr/wp-admin/edit.php*
+// @match        https://lidagreen.fr/wp-admin/post.php*
+// @match        https://lidagreen.fr/wp-admin/admin.php*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/WooCommerce%20Order%20Shipment%20Creator-1.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/WooCommerce%20Order%20Shipment%20Creator-1.0.user.js
 // ==/UserScript==
 
 (function () {
@@ -234,7 +242,7 @@
         saveQueue(safeParseQueue().filter(function (id) { return id !== postId; }));
 
         waitForElement(
-            'button[data-toggle="sksoftware-postone-for-woocommerce-shipment-create"]',
+            CREATE_BTN,
             function (btn) {
                 if (btn) {
                     btn.click();
@@ -245,6 +253,51 @@
             },
             10000
         );
+    }
+
+    // ─── PRE-FLIGHT FIX (pure — see test_shipments.js) ───────────────────────
+    // PostOne rejects ' / \ in receiver fields, and refuses a non-EU parcel (GB, CH, …)
+    // without a customs unit value. Both are fixed on the form right before the
+    // "Create shipment" click reaches the plugin.
+    const EU = ['AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IE',
+                'IT', 'LV', 'LT', 'LU', 'MT', 'NL', 'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE'];
+    const DEFAULT_UNIT_VALUE = '9.99';
+
+    // "D'Amico" -> "D Amico", "Via Roma 12/A" -> "Via Roma 12-A"
+    function cleanText(s) {
+        return String(s || '').replace(/['’‘`]/g, ' ').replace(/[\/\\]/g, '-').replace(/\s+/g, ' ').trim();
+    }
+
+    // An operator-entered value always wins; only an empty/zero one is filled.
+    function needsUnitValue(country, value) {
+        return !!country && EU.indexOf(country) === -1 && !(parseFloat(value) > 0);
+    }
+
+    const CREATE_BTN = 'button[data-toggle="sksoftware-postone-for-woocommerce-shipment-create"]';
+    const FIELD = '_sksoftware_postone_for_woocommerce_form_field_';
+    const CLEAN_FIELDS = ['receiver_name', 'receiver_company_name', 'receiver_address_line_1',
+                          'receiver_address_line_2', 'receiver_address_number', 'receiver_city',
+                          'receiver_region', 'receiver_postal_code'];
+    const field = function (name) { return document.querySelector('[name="' + FIELD + name + '"]'); };
+
+    function preflight() {
+        const changed = [];
+        CLEAN_FIELDS.forEach(function (name) {
+            const el = field(name);
+            if (!el) return;
+            const v = cleanText(el.value);
+            if (v === el.value.trim()) return;
+            changed.push(name.replace('receiver_', '') + ': ' + el.value + ' -> ' + v);
+            el.value = v;
+        });
+
+        const country = field('receiver_country'), unit = field('unit_value');
+        if (country && unit && needsUnitValue(country.value, unit.value)) {
+            unit.value = DEFAULT_UNIT_VALUE;
+            changed.push('unit value: ' + DEFAULT_UNIT_VALUE + ' (' + country.value + ' is outside the EU)');
+        }
+
+        if (changed.length) toast('Fixed before creating the shipment:\n' + changed.join('\n'), true);
     }
 
     // ─── UTILITIES ───────────────────────────────────────────────────────────
@@ -311,12 +364,20 @@
     }
 
     // Node (test harness) has no DOM — expose the pure part and stop here.
-    if (typeof document === 'undefined') { module.exports = { matchOrders, parseOrderNumber }; return; }
+    if (typeof document === 'undefined') {
+        module.exports = { matchOrders, parseOrderNumber, cleanText, needsUnitValue };
+        return;
+    }
 
     // ─── ENTRY POINT ─────────────────────────────────────────────────────────
     if (isOrdersListPage()) {
         initListPage();
     } else if (isOrderEditPage()) {
+        // Capture phase: runs before the plugin's own handler, for the auto-click
+        // below and for a manual click alike.
+        document.addEventListener('click', function (e) {
+            if (e.target.closest && e.target.closest(CREATE_BTN)) preflight();
+        }, true);
         initOrderPage();
     }
 

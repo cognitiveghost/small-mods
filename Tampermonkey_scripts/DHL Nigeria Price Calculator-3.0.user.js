@@ -5,6 +5,8 @@
 // @description  Smart price distribution for Nigeria customs (<=200 EUR total, <=50 EUR per item)
 // @match        https://app2.dhlexpresscommerce.com/orders/*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/DHL%20Nigeria%20Price%20Calculator-3.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/DHL%20Nigeria%20Price%20Calculator-3.0.user.js
 // ==/UserScript==
 
 (function () {

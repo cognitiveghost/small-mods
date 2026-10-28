@@ -89,3 +89,19 @@ assert.deepStrictEqual(matchOrders(rows, ['', '   ', '###']).found, []);
 assert.deepStrictEqual(matchOrders([], ['#UK10861']).notFound, ['#UK10861']);
 
 console.log('order matching: 30/30 ok');
+
+// Pre-flight: PostOne rejects ' / \ and needs a unit value outside the EU.
+const { cleanText, needsUnitValue } = require('./WooCommerce Order Shipment Creator-1.0.user.js');
+assert.strictEqual(cleanText("D'Amico"), 'D Amico');
+assert.strictEqual(cleanText('Sant’Anna'), 'Sant Anna');
+assert.strictEqual(cleanText('Via Roma 12/A'), 'Via Roma 12-A');
+assert.strictEqual(cleanText('Flat 3\\B'), 'Flat 3-B');
+assert.strictEqual(cleanText("  O' Neil  "), 'O Neil');
+assert.strictEqual(cleanText('Via Del Fuoco Sacro 51'), 'Via Del Fuoco Sacro 51');
+assert.strictEqual(cleanText(null), '');
+assert.strictEqual(needsUnitValue('CH', ''), true);
+assert.strictEqual(needsUnitValue('GB', '0'), true);
+assert.strictEqual(needsUnitValue('CH', '15'), false);   // operator value wins
+assert.strictEqual(needsUnitValue('IT', ''), false);
+assert.strictEqual(needsUnitValue('', ''), false);
+console.log('pre-flight fix: 12/12 ok');

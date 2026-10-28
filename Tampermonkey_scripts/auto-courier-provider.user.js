@@ -6,6 +6,8 @@
 // @match        */wp-admin/post.php?post=*&action=edit*
 // @match        */wp-admin/admin.php?page=wc-orders&action=edit*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/auto-courier-provider.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/auto-courier-provider.user.js
 // ==/UserScript==
 
 /* globals jQuery */

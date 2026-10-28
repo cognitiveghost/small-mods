@@ -9,6 +9,8 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Speedy%20Returns%20Scanner.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Speedy%20Returns%20Scanner.user.js
 // ==/UserScript==
 
 /*

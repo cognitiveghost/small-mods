@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WooCommerce to Postone Auto-Fill [v2.7]
 // @namespace    http://tampermonkey.net/
-// @version      3.1
+// @version      3.2
 // @description  Copies a WooCommerce order and auto-fills the Postone shipment form
 // @author       Dolphin
 // @match        *://*/wp-admin/post.php?post=*&action=edit*
@@ -11,12 +11,14 @@
 // @grant        GM_setValue
 // @grant        GM_getValue
 // @grant        GM_deleteValue
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/woocommerce_to_postone.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/woocommerce_to_postone.user.js
 // ==/UserScript==
 
 (function() {
     'use strict';
 
-    console.log('[Postone Script v3.1] Loaded on:', window.location.href);
+    console.log('[Postone Script v3.2] Loaded on:', window.location.href);
 
     // CONFIGURATION
     const CONFIG = {
@@ -255,6 +257,11 @@
             console.log('[Postone] Form not found!');
             return;
         }
+
+        // PostOne rejects ' / \ in the receiver fields: "D'Amico" -> "D Amico", "12/A" -> "12-A"
+        const clean = (s) => String(s || '').replace(/['’‘`]/g, ' ').replace(/[\/\\]/g, '-').replace(/\s+/g, ' ').trim();
+        ['firstName', 'lastName', 'company', 'address1', 'address2', 'city', 'postcode', 'state']
+            .forEach((k) => { data[k] = clean(data[k]); });
 
         const fullName = `${data.firstName} ${data.lastName}`.trim();
 

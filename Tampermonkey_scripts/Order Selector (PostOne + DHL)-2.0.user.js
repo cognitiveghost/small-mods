@@ -6,6 +6,8 @@
 // @match        https://postone.eu/orders*
 // @match        https://app2.dhlexpresscommerce.com/orders*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Order%20Selector%20%28PostOne%20%2B%20DHL%29-2.0.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Order%20Selector%20%28PostOne%20%2B%20DHL%29-2.0.user.js
 // ==/UserScript==
 
 (function () {

@@ -5,6 +5,8 @@
 // @description  Select Shopify orders from a pasted list using ONE search query (no page-by-page crawling)
 // @match        https://admin.shopify.com/store/*/orders*
 // @grant        none
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Order%20Selector%20Shopify.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/Order%20Selector%20Shopify.user.js
 // ==/UserScript==
 
 (function () {
