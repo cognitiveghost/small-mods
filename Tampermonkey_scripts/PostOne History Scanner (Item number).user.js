@@ -9,6 +9,8 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js
 // @grant        none
 // @run-at       document-idle
+// @updateURL    https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/PostOne%20History%20Scanner%20%28Item%20number%29.user.js
+// @downloadURL  https://raw.githubusercontent.com/cognitiveghost/small-mods/main/Tampermonkey_scripts/PostOne%20History%20Scanner%20%28Item%20number%29.user.js
 // ==/UserScript==
 
 /*
