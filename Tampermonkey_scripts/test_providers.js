@@ -11,7 +11,25 @@ const cases = [
     ['LS123456789FR',            'asendia'],
     ['1042' + '1'.repeat(18),    'post-at'],          // 22 chars
     ['633' + '1'.repeat(20),     'correos-express'],  // 23 chars
-    ['323' + '1'.repeat(20),     'correos-spain'],    // 23 chars
+    ['323' + '1'.repeat(20),     'correos-express'],  // 23 chars
+    // Real tracking numbers from postone.eu/history (2026-10-29)
+    ['4UW1D68003356',            'poste-italiane'],
+    ['323211383300013723113030', 'belgium-post'],      // B-POST, 24 digits
+    ['CC243456787BE',            'belgium-post'],
+    ['32300032752746001489103',  'correos-express'],
+    ['PKDBS09800067860108460D',  'correos-spain'],
+    ['PQ9NPH9800005880107400R',  'correos-spain'],
+    ['9L37353732302',            'colissimo'],
+    ['6A05116665938',            'colissimo'],
+    ['H1029540030951001048',     'hermes-de'],
+    ['H00TCA0035088977',         'evri'],
+    ['LX700800725DE',            'deutsche-post'],
+    ['LF108351629FR',            'asendia'],
+    ['LK040168300FR',            'asendia'],
+    ['CP489866333IE',            'an-post'],
+    ['2F1000020556',             'fastway-ireland'],
+    ['UB366385485AT',            'post-at'],
+    ['1042063004050644511008',   'post-at'],
     ['7000' + '1'.repeat(9),     'fan-courier'],      // 13 chars
     ['  3uw123456789  ',         'poste-italiane'],   // trimmed + upper-cased
     ['LY12345678DE',             ''],                 // 8 digits, not 9
@@ -53,6 +71,7 @@ const REAL_OPTIONS = [
     'asendia', 'asendia-usa', 'asendia-de', 'asendia-uk', 'post-at', 'dpd-at', 'dhl-at',
     'gls-au', 'correos-express', 'correos-spain', 'dpd-romania', 'posta-romana',
     'gls-romania', 'cargus', 'sameday', 'dhl-parcel', 'fedex', 'ups', 'usps',
+    'hermes-de', 'colissimo', 'an-post', 'fastway-ireland',   // verified 2026-10-29
 ];
 const fakeSelect = { options: REAL_OPTIONS.map((v) => ({ value: v })) };
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Auto Courier Provider
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  Detects the courier from the tracking number and saves the tracking info
 // @match        */wp-admin/post.php?post=*&action=edit*
 // @match        */wp-admin/admin.php?page=wc-orders&action=edit*
@@ -19,16 +19,25 @@
     // The slugs are the plugin's REAL option values, verified against the live
     // #tracking_provider dropdown — see test_providers.js, which pins them.
     // Adding a courier = adding one line + one line in the test snapshot.
+    // Patterns checked against postone.eu/history "Track Partner" (2026-10-29).
     const PROVIDERS = [
-        [/^3UW/,                  'poste-italiane'],       // Poste Italiane (IT)
+        [/^[34]UW/,               'poste-italiane'],       // IT POST EXPRESS (4UW = with COD)
         [/^H00TCA/,               'evri'],                 // Evri (UK)
+        [/^H\d{19}$/,             'hermes-de'],            // Hermes (DE), 20 chars
         [/^3SBPB/,                'belgium-post'],         // DHL via B-POST (BE)
-        [/^LY\d{9}DE$/,           'deutsche-post'],        // Deutsche Post (DE)
+        [/^323\d{21}$/,           'belgium-post'],         // B-POST (BE), 24 digits
+        [/^CC\d{9}BE$/,           'belgium-post'],         // B-POST (BE/LU)
+        [/^L[XY]\d{9}DE$/,        'deutsche-post'],        // Deutsche Post (DE)
         [/^LM\d{9}SE$/,           'postnord-sverige-ab'],  // PostNord (SE)
-        [/^LS\d{9}[A-Z]{2}$/,     'asendia'],              // Asendia (global entry)
+        [/^L[SFK]\d{9}[A-Z]{2}$/, 'asendia'],              // Asendia (LS=CH, LF/LK=FR)
+        [/^(9L|6A)\d{11}$/,       'colissimo'],            // Colissimo (FR), 13 chars
+        [/^CP\d{9}IE$/,           'an-post'],              // An Post (IE)
+        [/^\dF\d{10}$/,           'fastway-ireland'],      // Fastway (IE), 12 chars
         [/^1042.{18}$/,           'post-at'],              // Austrian Post, 22 chars
+        [/^UB\d{9}AT$/,           'post-at'],              // Austrian Post, international
         [/^633.{20}$/,            'correos-express'],      // Correos Express (ES), 23 chars
-        [/^323.{20}$/,            'correos-spain'],        // Correos (ES), 23 chars
+        [/^323.{20}$/,            'correos-express'],      // Correos Express (ES), 23 chars
+        [/^P[KQ][A-Z0-9]{21}$/,   'correos-spain'],        // Correos (ES), 23 chars
         [/^7000.{9}$/,            'fan-courier'],          // FAN Courier (RO), 13 chars
     ];
 
